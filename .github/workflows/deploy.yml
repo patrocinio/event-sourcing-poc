@@ -1,0 +1,140 @@
+name: Build and Deploy to EKS
+
+on:
+  push:
+    branches: [main]
+
+permissions:
+  id-token: write
+  contents: read
+
+env:
+  AWS_REGION: us-east-1
+  ENVIRONMENT_NAME: axon-poc
+  TEMPLATES_BUCKET: axon-poc-cfn-templates
+
+jobs:
+  deploy:
+    name: Build, Push, and Deploy
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Configure AWS credentials (OIDC)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_DEPLOY_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Upload CloudFormation templates to S3
+        run: |
+          aws s3 mb s3://${{ env.TEMPLATES_BUCKET }} --region ${{ env.AWS_REGION }} 2>/dev/null || true
+          aws s3 sync cfn/ s3://${{ env.TEMPLATES_BUCKET }}/ --delete
+
+      - name: Deploy CloudFormation parent stack
+        run: |
+          aws cloudformation deploy \
+            --template-file cfn/parent-stack.yaml \
+            --stack-name ${{ env.ENVIRONMENT_NAME }} \
+            --parameter-overrides \
+              EnvironmentName=${{ env.ENVIRONMENT_NAME }} \
+              TemplatesBucketName=${{ env.TEMPLATES_BUCKET }} \
+            --capabilities CAPABILITY_NAMED_IAM \
+            --no-fail-on-empty-changeset \
+            --region ${{ env.AWS_REGION }}
+
+      - name: Get CloudFormation outputs
+        id: cfn-outputs
+        run: |
+          CLUSTER_NAME=$(aws cloudformation describe-stacks \
+            --stack-name ${{ env.ENVIRONMENT_NAME }} \
+            --query "Stacks[0].Outputs[?OutputKey=='ClusterName'].OutputValue" \
+            --output text --region ${{ env.AWS_REGION }})
+          ECR_URI=$(aws cloudformation describe-stacks \
+            --stack-name ${{ env.ENVIRONMENT_NAME }} \
+            --query "Stacks[0].Outputs[?OutputKey=='ECRRepositoryUri'].OutputValue" \
+            --output text --region ${{ env.AWS_REGION }})
+          echo "cluster_name=$CLUSTER_NAME" >> $GITHUB_OUTPUT
+          echo "ecr_uri=$ECR_URI" >> $GITHUB_OUTPUT
+
+      - name: Login to Amazon ECR
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          java-version: '17'
+          distribution: 'corretto'
+
+      - name: Build with Gradle
+        run: ./gradlew bootJar --no-daemon
+
+      - name: Build Docker image
+        run: |
+          docker build -t ${{ steps.cfn-outputs.outputs.ecr_uri }}:${{ github.sha }} .
+          docker tag ${{ steps.cfn-outputs.outputs.ecr_uri }}:${{ github.sha }} \
+            ${{ steps.cfn-outputs.outputs.ecr_uri }}:latest
+
+      - name: Push to ECR
+        run: |
+          docker push ${{ steps.cfn-outputs.outputs.ecr_uri }}:${{ github.sha }}
+          docker push ${{ steps.cfn-outputs.outputs.ecr_uri }}:latest
+
+      - name: Update kubeconfig
+        run: |
+          aws eks update-kubeconfig \
+            --name ${{ steps.cfn-outputs.outputs.cluster_name }} \
+            --region ${{ env.AWS_REGION }}
+
+      - name: Install AWS Load Balancer Controller (Helm)
+        run: |
+          # Install Helm
+          curl -fsSL https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3 | bash
+
+          # Add EKS Helm repo
+          helm repo add eks https://aws.github.io/eks-charts
+          helm repo update
+
+          # Get ALB Controller Role ARN from addons stack
+          ALB_ROLE_ARN=$(aws cloudformation describe-stacks \
+            --stack-name ${{ env.ENVIRONMENT_NAME }}-EksClusterStack-* \
+            --query "Stacks[].Outputs[?OutputKey=='ClusterName'].OutputValue" \
+            --output text --region ${{ env.AWS_REGION }} 2>/dev/null || echo "")
+
+          # Install or upgrade ALB Controller
+          helm upgrade --install aws-load-balancer-controller eks/aws-load-balancer-controller \
+            --namespace kube-system \
+            --set clusterName=${{ steps.cfn-outputs.outputs.cluster_name }} \
+            --set serviceAccount.create=true \
+            --set serviceAccount.name=aws-load-balancer-controller \
+            --set region=${{ env.AWS_REGION }} \
+            --set vpcId=$(aws eks describe-cluster --name ${{ steps.cfn-outputs.outputs.cluster_name }} \
+              --query "cluster.resourcesVpcConfig.vpcId" --output text --region ${{ env.AWS_REGION }}) \
+            || echo "ALB Controller installation skipped or already exists"
+
+      - name: Deploy Kubernetes manifests
+        run: |
+          # Substitute image placeholder with actual ECR URI
+          IMAGE="${{ steps.cfn-outputs.outputs.ecr_uri }}:${{ github.sha }}"
+
+          # Apply storage class and namespace first
+          kubectl apply -f k8s/storage-class.yaml
+          kubectl apply -f k8s/axon-server.yaml
+
+          # Apply loan app with actual image
+          sed "s|<ECR_REPO>/axon-poc-loan-originations:latest|${IMAGE}|g" \
+            k8s/loan-app.yaml | kubectl apply -f -
+
+      - name: Verify deployment
+        run: |
+          echo "Waiting for loan-originations-poc deployment to be ready..."
+          kubectl rollout status deployment/loan-originations-poc \
+            -n axon-poc --timeout=300s || true
+          echo ""
+          echo "=== Pod Status ==="
+          kubectl get pods -n axon-poc
+          echo ""
+          echo "=== Services ==="
+          kubectl get svc -n axon-poc
