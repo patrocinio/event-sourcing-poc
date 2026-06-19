@@ -20,7 +20,7 @@ spec:
     spec:
       containers:
         - name: app
-          image: <ECR_REPO>/axon-poc-loan-originations:latest
+          image: <ACCOUNT_ID>.dkr.ecr.us-east-1.amazonaws.com/axon-poc-loan-originations:latest
           ports:
             - containerPort: 8080
               name: http
