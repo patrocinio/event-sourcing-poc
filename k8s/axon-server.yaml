@@ -1,0 +1,145 @@
+---
+# Axon Server StatefulSet — 3-node cluster for HA (Raft quorum)
+# This deploys Axon Server Standard Edition for the PoC.
+# For production, use Axon Server Enterprise Edition with license.
+
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: axon-poc
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: axon-server
+  namespace: axon-poc
+  labels:
+    app: axon-server
+spec:
+  # Headless service for StatefulSet pod DNS
+  clusterIP: None
+  selector:
+    app: axon-server
+  ports:
+    - name: grpc
+      port: 8124
+      targetPort: 8124
+    - name: cluster
+      port: 8224
+      targetPort: 8224
+    - name: http
+      port: 8024
+      targetPort: 8024
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: axon-server-client
+  namespace: axon-poc
+  labels:
+    app: axon-server
+spec:
+  # Client-facing service (load-balanced across all nodes)
+  type: ClusterIP
+  selector:
+    app: axon-server
+  ports:
+    - name: grpc
+      port: 8124
+      targetPort: 8124
+    - name: http
+      port: 8024
+      targetPort: 8024
+
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: axon-server
+  namespace: axon-poc
+spec:
+  serviceName: axon-server
+  replicas: 3
+  selector:
+    matchLabels:
+      app: axon-server
+  template:
+    metadata:
+      labels:
+        app: axon-server
+    spec:
+      # Spread across AZs for HA
+      topologySpreadConstraints:
+        - maxSkew: 1
+          topologyKey: topology.kubernetes.io/zone
+          whenUnsatisfiable: DoNotSchedule
+          labelSelector:
+            matchLabels:
+              app: axon-server
+      containers:
+        - name: axon-server
+          image: axoniq/axonserver:2024.1.2
+          ports:
+            - containerPort: 8124
+              name: grpc
+            - containerPort: 8224
+              name: cluster
+            - containerPort: 8024
+              name: http
+          env:
+            - name: AXONIQ_AXONSERVER_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+            - name: AXONIQ_AXONSERVER_HOSTNAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+            # Cluster auto-configuration via headless service DNS
+            - name: AXONIQ_AXONSERVER_AUTOCLUSTER_FIRST
+              value: "axon-server-0.axon-server.axon-poc.svc.cluster.local"
+            - name: AXONIQ_AXONSERVER_AUTOCLUSTER_CONTEXTS
+              value: "default"
+          resources:
+            requests:
+              cpu: "500m"
+              memory: "1Gi"
+            limits:
+              cpu: "2000m"
+              memory: "2Gi"
+          readinessProbe:
+            httpGet:
+              path: /actuator/health
+              port: 8024
+            initialDelaySeconds: 30
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /actuator/health
+              port: 8024
+            initialDelaySeconds: 60
+            periodSeconds: 15
+          volumeMounts:
+            - name: data
+              mountPath: /axonserver/data
+            - name: events
+              mountPath: /axonserver/events
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        storageClassName: gp3
+        resources:
+          requests:
+            storage: 10Gi
+    - metadata:
+        name: events
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        storageClassName: gp3
+        resources:
+          requests:
+            storage: 50Gi

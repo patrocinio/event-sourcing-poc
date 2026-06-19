@@ -1,0 +1,89 @@
+---
+# Loan Originations PoC Application Deployment
+
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: loan-originations-poc
+  namespace: axon-poc
+  labels:
+    app: loan-originations-poc
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: loan-originations-poc
+  template:
+    metadata:
+      labels:
+        app: loan-originations-poc
+    spec:
+      containers:
+        - name: app
+          image: <ECR_REPO>/axon-poc-loan-originations:latest
+          ports:
+            - containerPort: 8080
+              name: http
+          env:
+            # Connect to Axon Server via K8s service DNS
+            - name: AXON_SERVER_HOST
+              value: "axon-server-client.axon-poc.svc.cluster.local"
+            - name: AXON_SERVER_PORT
+              value: "8124"
+          resources:
+            requests:
+              cpu: "250m"
+              memory: "512Mi"
+            limits:
+              cpu: "1000m"
+              memory: "1Gi"
+          readinessProbe:
+            httpGet:
+              path: /actuator/health/readiness
+              port: 8080
+            initialDelaySeconds: 20
+            periodSeconds: 5
+          livenessProbe:
+            httpGet:
+              path: /actuator/health/liveness
+              port: 8080
+            initialDelaySeconds: 30
+            periodSeconds: 10
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: loan-originations-poc
+  namespace: axon-poc
+spec:
+  type: ClusterIP
+  selector:
+    app: loan-originations-poc
+  ports:
+    - name: http
+      port: 80
+      targetPort: 8080
+
+---
+# Optional: Ingress for external access during PoC testing
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: loan-originations-poc
+  namespace: axon-poc
+  annotations:
+    kubernetes.io/ingress.class: alb
+    alb.ingress.kubernetes.io/scheme: internal
+    alb.ingress.kubernetes.io/target-type: ip
+spec:
+  rules:
+    - http:
+        paths:
+          - path: /api/loans
+            pathType: Prefix
+            backend:
+              service:
+                name: loan-originations-poc
+                port:
+                  number: 80
