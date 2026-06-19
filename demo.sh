@@ -257,8 +257,10 @@ explain "  • Real-time notifications (WebSocket projection)"
 pause
 
 ###############################################################################
-header "PART 7: AXON SERVER — The Event Store & Message Router"
+header "PART 7: AXON SERVER DASHBOARD — Seeing the Event Store in Action"
 ###############################################################################
+
+AXON_DASHBOARD="http://a725cde4c8a24414ea16e8e32900cc5f-78d25d3003800d72.elb.us-east-1.amazonaws.com:8024"
 
 explain "Axon Server provides:"
 explain "  • Append-only event store (like a database commit log, but for business events)"
@@ -266,14 +268,107 @@ explain "  • Command routing (finds which aggregate instance handles a command
 explain "  • Event distribution (fan-out to all subscribed projections)"
 explain "  • Event replay (rebuild projections from scratch)"
 echo ""
-explain "Access Axon Server dashboard:"
-explain "  kubectl port-forward svc/axon-server-client 8024:8024 -n axon-poc"
-explain "  Then open: http://localhost:8024"
+echo -e "  ${BOLD}Dashboard URL:${RESET} ${AXON_DASHBOARD}"
 echo ""
-explain "In the dashboard you can see:"
-explain "  • All events stored for each aggregate"
-explain "  • Connected applications"
-explain "  • Command and query metrics"
+step "Opening Axon Server Dashboard in browser..."
+open "${AXON_DASHBOARD}" 2>/dev/null || echo "  Open the URL above in your browser"
+
+pause
+
+###############################################################################
+header "PART 7a: DASHBOARD WALKTHROUGH — Overview Page"
+###############################################################################
+
+explain "When the dashboard loads, you'll see the OVERVIEW page:"
+echo ""
+echo "  ┌─────────────────────────────────────────────────────────────────┐"
+echo "  │  Overview Page                                                  │"
+echo "  ├─────────────────────────────────────────────────────────────────┤"
+echo "  │  • Node name: axon-server-0                                     │"
+echo "  │  • Context: 'default' — our event store partition                │"
+echo "  │  • Connected apps: axon-poc-loan-originations (2 instances)      │"
+echo "  │  • Event count: shows total events stored                        │"
+echo "  └─────────────────────────────────────────────────────────────────┘"
+echo ""
+explain "Key observation: The app connects TWICE (2 pods) but Axon Server"
+explain "routes commands to the correct aggregate instance automatically."
+
+pause
+
+###############################################################################
+header "PART 7b: DASHBOARD WALKTHROUGH — Search Events"
+###############################################################################
+
+explain "Click 'Search' in the left sidebar to browse the event store."
+echo ""
+echo "  Steps:"
+echo "    1. Select context: 'default'"
+echo "    2. Click 'Search' with no filters → see ALL events"
+echo "    3. Notice events are ordered by global sequence number"
+echo ""
+echo "  You'll see events like:"
+echo "    ┌────┬──────────────────────────────────┬─────────────────────┐"
+echo "    │ #  │ Event Type                       │ Aggregate ID        │"
+echo "    ├────┼──────────────────────────────────┼─────────────────────┤"
+echo "    │ 0  │ LoanApplicationSubmittedEvent     │ ${LOAN_ID:0:8}...   │"
+echo "    │ 1  │ LoanApprovedEvent                 │ ${LOAN_ID:0:8}...   │"
+echo "    │ 2  │ LoanDisbursedEvent                │ ${LOAN_ID:0:8}...   │"
+echo "    │ 3  │ LoanApplicationSubmittedEvent     │ ${LOAN_ID2:0:8}...  │"
+echo "    │ 4  │ LoanRejectedEvent                 │ ${LOAN_ID2:0:8}...  │"
+echo "    └────┴──────────────────────────────────┴─────────────────────┘"
+echo ""
+explain "Click any event to expand its JSON payload — you'll see the full"
+explain "immutable fact: applicantName, requestedAmount, timestamps, etc."
+echo ""
+explain "KEY INSIGHT: These events are the source of truth. The read model"
+explain "(projection) is derived FROM these events. Delete the projection?"
+explain "No problem — replay these events and rebuild it."
+
+pause
+
+###############################################################################
+header "PART 7c: DASHBOARD WALKTHROUGH — Filter by Aggregate"
+###############################################################################
+
+explain "Now let's look at a single loan's complete history:"
+echo ""
+echo "  Steps:"
+echo "    1. In the Search page, paste this Aggregate ID:"
+echo -e "       ${BOLD}${LOAN_ID}${RESET}"
+echo "    2. Click 'Search'"
+echo ""
+echo "  Result — the complete lifecycle of Maria Garcia's loan:"
+echo "    Event 0: LoanApplicationSubmittedEvent (amount=120000)"
+echo "    Event 1: LoanApprovedEvent (approved=115000, by Sarah Chen)"
+echo "    Event 2: LoanDisbursedEvent (account=ACH-0012345678)"
+echo ""
+explain "This IS the aggregate's state. There is no loans table. The aggregate"
+explain "is reconstructed by replaying these 3 events in order."
+explain "This is event sourcing — state = f(events)."
+
+pause
+
+###############################################################################
+header "PART 7d: DASHBOARD WALKTHROUGH — Commands & Queries"
+###############################################################################
+
+explain "Click 'Commands' in the sidebar:"
+echo ""
+echo "  You'll see registered command handlers:"
+echo "    • SubmitLoanApplicationCommand  → LoanAggregate (constructor)"
+echo "    • ApproveLoanCommand            → LoanAggregate.handle()"
+echo "    • RejectLoanCommand             → LoanAggregate.handle()"
+echo "    • DisburseLoanCommand           → LoanAggregate.handle()"
+echo ""
+explain "Click 'Queries' in the sidebar:"
+echo ""
+echo "  You'll see registered query handlers:"
+echo "    • FindAllLoansQuery        → LoanProjection"
+echo "    • FindLoanByIdQuery        → LoanProjection"
+echo "    • FindLoansByStatusQuery   → LoanProjection"
+echo ""
+explain "Notice: Commands go to AGGREGATES, Queries go to PROJECTIONS."
+explain "Axon Server handles all the routing — your code just declares handlers."
 
 pause
 
