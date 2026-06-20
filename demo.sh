@@ -14,14 +14,23 @@
 #
 # Usage:
 #   chmod +x demo.sh
-#   ./demo.sh [BASE_URL]
+#   ./demo.sh [LOAN_APP_URL]
 #
-# If no BASE_URL is provided, defaults to the NLB endpoint.
+# Or set environment variables:
+#   export LOAN_APP_URL=http://<loan-app-nlb>
+#   export AXON_DASHBOARD_URL=http://<axon-server-nlb>:8024
+#   ./demo.sh
+#
+# To get the URLs from a running cluster:
+#   kubectl get svc loan-originations-poc -n axon-poc -o jsonpath='{.status.loadBalancer.ingress[0].hostname}'
+#   kubectl get svc axon-server-client -n axon-poc -o jsonpath='{.status.loadBalancer.ingress[0].hostname}'
+#
+# Axon Server Dashboard token: axon-poc-access-token-2024
 ###############################################################################
 
 set -e
 
-BASE="${1:-http://ab515f97030094f14898cb6d4f0cc4bc-19e4414d77b31d76.elb.us-east-1.amazonaws.com}"
+BASE="${1:-${LOAN_APP_URL:-http://LOAN-APP-NLB-URL}}"
 BOLD="\033[1m"
 GREEN="\033[1;32m"
 CYAN="\033[1;36m"
@@ -260,7 +269,8 @@ pause
 header "PART 7: AXON SERVER DASHBOARD — Seeing the Event Store in Action"
 ###############################################################################
 
-AXON_DASHBOARD="http://a725cde4c8a24414ea16e8e32900cc5f-78d25d3003800d72.elb.us-east-1.amazonaws.com:8024"
+AXON_DASHBOARD="${AXON_DASHBOARD_URL:-http://AXON-SERVER-NLB-URL:8024}"
+AXON_TOKEN="axon-poc-access-token-2024"
 
 explain "Axon Server provides:"
 explain "  • Append-only event store (like a database commit log, but for business events)"
@@ -268,18 +278,33 @@ explain "  • Command routing (finds which aggregate instance handles a command
 explain "  • Event distribution (fan-out to all subscribed projections)"
 explain "  • Event replay (rebuild projections from scratch)"
 echo ""
+explain "The dashboard is protected with token-based authentication."
+explain "This satisfies security requirements (no unauthenticated public endpoints)."
+echo ""
 echo -e "  ${BOLD}Dashboard URL:${RESET} ${AXON_DASHBOARD}"
+echo -e "  ${BOLD}Access Token:${RESET}  ${AXON_TOKEN}"
+echo ""
+echo "  To get the actual NLB URL:"
+echo "    kubectl get svc axon-server-client -n axon-poc -o jsonpath='{.status.loadBalancer.ingress[0].hostname}'"
 echo ""
 step "Opening Axon Server Dashboard in browser..."
 open "${AXON_DASHBOARD}" 2>/dev/null || echo "  Open the URL above in your browser"
+echo ""
+explain "When prompted for credentials, enter the access token shown above."
 
 pause
 
 ###############################################################################
-header "PART 7a: DASHBOARD WALKTHROUGH — Overview Page"
+header "PART 7a: DASHBOARD WALKTHROUGH — Login & Overview"
 ###############################################################################
 
-explain "When the dashboard loads, you'll see the OVERVIEW page:"
+explain "When the dashboard loads, you'll see a login prompt."
+echo ""
+echo "  Steps to log in:"
+echo "    1. Enter the access token: ${AXON_TOKEN}"
+echo "    2. Click 'Login' or press Enter"
+echo ""
+explain "After login, you'll see the OVERVIEW page:"
 echo ""
 echo "  ┌─────────────────────────────────────────────────────────────────┐"
 echo "  │  Overview Page                                                  │"
@@ -292,6 +317,10 @@ echo "  └───────────────────────
 echo ""
 explain "Key observation: The app connects TWICE (2 pods) but Axon Server"
 explain "routes commands to the correct aggregate instance automatically."
+echo ""
+explain "Security note: Access control is enabled — all gRPC and HTTP"
+explain "connections must present a valid token. The loan-app pods receive"
+explain "their token from a K8s Secret (axon-server-token)."
 
 pause
 
