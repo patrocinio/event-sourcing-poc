@@ -8,6 +8,17 @@ metadata:
   name: axon-poc
 
 ---
+# Secret containing the access token for Axon Server authentication
+apiVersion: v1
+kind: Secret
+metadata:
+  name: axon-server-token
+  namespace: axon-poc
+type: Opaque
+stringData:
+  token: "axon-poc-access-token-2024"
+
+---
 apiVersion: v1
 kind: Service
 metadata:
@@ -39,9 +50,11 @@ metadata:
   namespace: axon-poc
   labels:
     app: axon-server
+  annotations:
+    service.beta.kubernetes.io/aws-load-balancer-scheme: internet-facing
+    service.beta.kubernetes.io/aws-load-balancer-type: nlb
 spec:
-  # Client-facing service (load-balanced across all nodes)
-  type: ClusterIP
+  type: LoadBalancer
   selector:
     app: axon-server
   ports:
@@ -88,6 +101,15 @@ spec:
               valueFrom:
                 fieldRef:
                   fieldPath: metadata.name
+            # Enable access control (authentication)
+            - name: AXONIQ_AXONSERVER_ACCESSCONTROL_ENABLED
+              value: "true"
+            # Token used for both internal and client communication
+            - name: AXONIQ_AXONSERVER_ACCESSCONTROL_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: axon-server-token
+                  key: token
           resources:
             requests:
               cpu: "500m"

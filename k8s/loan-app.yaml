@@ -30,6 +30,12 @@ spec:
               value: "axon-server-client.axon-poc.svc.cluster.local"
             - name: AXON_SERVER_PORT
               value: "8124"
+            # Access token for authenticated Axon Server connection
+            - name: AXON_SERVER_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: axon-server-token
+                  key: token
           resources:
             requests:
               cpu: "250m"

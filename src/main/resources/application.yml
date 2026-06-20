@@ -9,6 +9,8 @@ axon:
     # Client identification for Axon Server dashboard
     client-id: ${HOSTNAME:loan-originations-poc}
     component-name: loan-originations
+    # Access token for authenticated connection to Axon Server
+    token: ${AXON_SERVER_TOKEN:}
 
   # Event processing configuration
   eventhandling:
