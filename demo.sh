@@ -18,14 +18,14 @@
 #
 # Or set environment variables:
 #   export LOAN_APP_URL=http://<loan-app-nlb>
-#   export AXON_DASHBOARD_URL=http://<axon-server-nlb>:8024
 #   ./demo.sh
 #
-# To get the URLs from a running cluster:
+# To get the loan app URL from a running cluster:
 #   kubectl get svc loan-originations-poc -n axon-poc -o jsonpath='{.status.loadBalancer.ingress[0].hostname}'
-#   kubectl get svc axon-server-client -n axon-poc -o jsonpath='{.status.loadBalancer.ingress[0].hostname}'
 #
-# Axon Server Dashboard token: axon-poc-access-token-2024
+# For the Axon Server dashboard (internal only, requires port-forward):
+#   kubectl port-forward svc/axon-server-client 8024:8024 -n axon-poc
+#   Then open: http://localhost:8024
 ###############################################################################
 
 set -e
@@ -269,7 +269,7 @@ pause
 header "PART 7: AXON SERVER DASHBOARD — Seeing the Event Store in Action"
 ###############################################################################
 
-AXON_DASHBOARD="${AXON_DASHBOARD_URL:-http://AXON-SERVER-NLB-URL:8024}"
+AXON_DASHBOARD="http://localhost:8024"
 AXON_TOKEN="axon-poc-access-token-2024"
 
 explain "Axon Server provides:"
@@ -278,19 +278,16 @@ explain "  • Command routing (finds which aggregate instance handles a command
 explain "  • Event distribution (fan-out to all subscribed projections)"
 explain "  • Event replay (rebuild projections from scratch)"
 echo ""
-explain "The dashboard is protected with token-based authentication."
-explain "This satisfies security requirements (no unauthenticated public endpoints)."
+explain "The dashboard is internal-only (not publicly exposed) for security."
+explain "Access it via kubectl port-forward:"
+echo ""
+echo -e "  ${BOLD}Run in another terminal:${RESET}"
+echo "    kubectl port-forward svc/axon-server-client 8024:8024 -n axon-poc"
 echo ""
 echo -e "  ${BOLD}Dashboard URL:${RESET} ${AXON_DASHBOARD}"
-echo -e "  ${BOLD}Access Token:${RESET}  ${AXON_TOKEN}"
 echo ""
-echo "  To get the actual NLB URL:"
-echo "    kubectl get svc axon-server-client -n axon-poc -o jsonpath='{.status.loadBalancer.ingress[0].hostname}'"
-echo ""
-step "Opening Axon Server Dashboard in browser..."
+step "Ensure port-forward is running, then open the dashboard..."
 open "${AXON_DASHBOARD}" 2>/dev/null || echo "  Open the URL above in your browser"
-echo ""
-explain "When prompted for credentials, enter the access token shown above."
 
 pause
 
@@ -298,13 +295,7 @@ pause
 header "PART 7a: DASHBOARD WALKTHROUGH — Login & Overview"
 ###############################################################################
 
-explain "When the dashboard loads, you'll see a login prompt."
-echo ""
-echo "  Steps to log in:"
-echo "    1. Enter the access token: ${AXON_TOKEN}"
-echo "    2. Click 'Login' or press Enter"
-echo ""
-explain "After login, you'll see the OVERVIEW page:"
+explain "When the dashboard loads, you'll see the OVERVIEW page:"
 echo ""
 echo "  ┌─────────────────────────────────────────────────────────────────┐"
 echo "  │  Overview Page                                                  │"
@@ -318,9 +309,8 @@ echo ""
 explain "Key observation: The app connects TWICE (2 pods) but Axon Server"
 explain "routes commands to the correct aggregate instance automatically."
 echo ""
-explain "Security note: Access control is enabled — all gRPC and HTTP"
-explain "connections must present a valid token. The loan-app pods receive"
-explain "their token from a K8s Secret (axon-server-token)."
+explain "Security note: The dashboard is only accessible via port-forward"
+explain "(kubectl). It is NOT exposed to the public internet."
 
 pause
 

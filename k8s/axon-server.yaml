@@ -50,11 +50,9 @@ metadata:
   namespace: axon-poc
   labels:
     app: axon-server
-  annotations:
-    service.beta.kubernetes.io/aws-load-balancer-scheme: internet-facing
-    service.beta.kubernetes.io/aws-load-balancer-type: nlb
 spec:
-  type: LoadBalancer
+  # Internal only — access dashboard via: kubectl port-forward svc/axon-server-client 8024:8024 -n axon-poc
+  type: ClusterIP
   selector:
     app: axon-server
   ports:
