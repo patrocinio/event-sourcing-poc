@@ -279,14 +279,17 @@ explain "  • Event distribution (fan-out to all subscribed projections)"
 explain "  • Event replay (rebuild projections from scratch)"
 echo ""
 explain "The dashboard is internal-only (not publicly exposed) for security."
-explain "Access it via kubectl port-forward:"
+explain "Starting port-forward to access it locally..."
 echo ""
-echo -e "  ${BOLD}Run in another terminal:${RESET}"
-echo "    kubectl port-forward svc/axon-server-client 8024:8024 -n axon-poc"
+step "Starting kubectl port-forward in background..."
+kubectl port-forward svc/axon-server-client 8024:8024 -n axon-poc &>/dev/null &
+PF_PID=$!
+sleep 3
+echo "  Port-forward started (PID: ${PF_PID})"
 echo ""
 echo -e "  ${BOLD}Dashboard URL:${RESET} ${AXON_DASHBOARD}"
 echo ""
-step "Ensure port-forward is running, then open the dashboard..."
+step "Opening Axon Server Dashboard in browser..."
 open "${AXON_DASHBOARD}" 2>/dev/null || echo "  Open the URL above in your browser"
 
 pause
@@ -425,3 +428,9 @@ echo "  └───────────────────────
 echo ""
 echo -e "  ${GREEN}Demo complete!${RESET}"
 echo ""
+
+# Cleanup port-forward
+if [ -n "${PF_PID:-}" ] && kill -0 "$PF_PID" 2>/dev/null; then
+  kill "$PF_PID" 2>/dev/null
+  echo "  (Port-forward stopped)"
+fi
