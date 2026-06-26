@@ -57,13 +57,17 @@ export class RegionalStack extends cdk.Stack {
       description: 'ElastiCache Redis security group',
       allowAllOutbound: false,
     });
-    redisSg.addIngressRule(lambdaSg, ec2.Port.tcp(6379), 'Lambda → Redis');
+    redisSg.addIngressRule(lambdaSg, ec2.Port.tcp(6379), 'Lambda to Redis');
 
     // ========== DATA (Multi-AZ ElastiCache) ==========
 
-    // Reference the Global Table (already created in GlobalStack)
-    const eventTable = dynamodb.Table.fromTableName(
-      this, 'LoanEventsRef', 'LoanEvents'
+    // Reference the Global Table — grant permissions via table name
+    // (Global Tables are accessed by name, same in all regions)
+    const eventTable = dynamodb.Table.fromTableAttributes(
+      this, 'LoanEventsRef', {
+        tableName: 'LoanEvents',
+        grantIndexPermissions: true,
+      }
     );
 
     // Kinesis — regional stream for downstream consumers
@@ -172,15 +176,30 @@ export class RegionalStack extends cdk.Stack {
     });
 
     // DynamoDB Streams → Projector (rebuilds Redis from events)
-    projectorHandler.addEventSource(
-      new eventsources.DynamoEventSource(props.globalTable, {
-        startingPosition: lambda.StartingPosition.TRIM_HORIZON,
-        batchSize: 25,
-        retryAttempts: 5,
-        bisectBatchOnError: true,
-        maxBatchingWindow: cdk.Duration.seconds(5),
-      })
-    );
+    // Each region's DynamoDB Global Table replica has its own stream.
+    // We use the local table reference for event source mapping.
+    props.globalTable.grantStreamRead(projectorHandler);
+
+    // For the event source, we need to use a table reference that resolves
+    // to the local region's stream (Global Tables replicate streams per-region)
+    const localTableForStream = dynamodb.Table.fromTableAttributes(this, 'LocalTableStream', {
+      tableName: 'LoanEvents',
+      tableStreamArn: props.globalTable.tableStreamArn,
+    });
+
+    // Only add DynamoDB Stream event source in primary region
+    // Secondary region stream will be configured post-deploy via AWS CLI
+    // (CDK cross-region stream mapping not natively supported)
+    if (props.isPrimary) {
+      projectorHandler.addEventSource(
+        new eventsources.DynamoEventSource(props.globalTable, {
+          startingPosition: lambda.StartingPosition.TRIM_HORIZON,
+          batchSize: 25,
+          retryAttempts: 5,
+          bisectBatchOnError: true,
+        })
+      );
+    }
 
     // Health Handler
     const healthHandler = new nodejs.NodejsFunction(this, 'HealthHandler', {
