@@ -18,7 +18,12 @@
 
 set -e
 
-BASE="${API_URL:-${1:-http://localhost:3000}}"
+BASE="${API_URL:-${1:-$(aws cloudformation describe-stacks --stack-name LoanOriginationsApi --query 'Stacks[0].Outputs[?OutputKey==`ApiUrl`].OutputValue' --output text 2>/dev/null)}}"
+if [ -z "$BASE" ] || [ "$BASE" = "None" ]; then
+  echo "  ERROR: Could not determine API URL."
+  echo "  Either set API_URL env var, pass as argument, or ensure LoanOriginationsApi stack is deployed."
+  exit 1
+fi
 # Remove trailing slash
 BASE="${BASE%/}"
 
