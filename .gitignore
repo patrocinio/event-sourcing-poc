@@ -1,0 +1,15 @@
+node_modules/
+dist/
+cdk.out/
+.cdk.staging/
+*.js
+*.d.ts
+*.js.map
+!jest.config.ts
+!infra/**/*.ts
+!src/**/*.ts
+!test/**/*.ts
+.env
+coverage/
+.gradle/
+build/

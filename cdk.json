@@ -1,0 +1,9 @@
+{
+  "app": "npx ts-node --prefer-ts-exts infra/app.ts",
+  "watch": {
+    "include": ["src/**", "infra/**"]
+  },
+  "context": {
+    "@aws-cdk/core:stackRelativeExports": true
+  }
+}

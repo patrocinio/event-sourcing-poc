@@ -1,0 +1,33 @@
+{
+  "name": "aws-native-loan-originations",
+  "version": "1.0.0",
+  "description": "CQRS/Event Sourcing Loan Originations using native AWS services",
+  "scripts": {
+    "build": "tsc",
+    "test": "jest",
+    "cdk": "cdk",
+    "synth": "cdk synth",
+    "deploy": "cdk deploy --all --require-approval never",
+    "destroy": "cdk destroy --all --force"
+  },
+  "devDependencies": {
+    "@types/aws-lambda": "^8.10.136",
+    "@types/jest": "^29.5.12",
+    "@types/node": "^20.11.0",
+    "aws-cdk": "^2.170.0",
+    "aws-cdk-lib": "^2.170.0",
+    "constructs": "^10.3.0",
+    "esbuild": "^0.20.0",
+    "jest": "^29.7.0",
+    "ts-jest": "^29.1.2",
+    "typescript": "^5.4.0"
+  },
+  "dependencies": {
+    "@aws-sdk/client-dynamodb": "^3.500.0",
+    "@aws-sdk/client-kinesis": "^3.500.0",
+    "@aws-sdk/lib-dynamodb": "^3.500.0",
+    "@aws-sdk/util-dynamodb": "^3.500.0",
+    "ioredis": "^5.3.2",
+    "uuid": "^9.0.0"
+  }
+}

@@ -1,143 +1,71 @@
-# Execution Plan
+# Execution Plan — AWS-Native Loan Originations
 
-## Detailed Analysis Summary
+## Project Summary
+Replace Axon Framework PoC with a fully serverless AWS-native CQRS/Event Sourcing implementation using TypeScript, Lambda, DynamoDB, Kinesis, ElastiCache, and CDK.
 
-### Transformation Scope
-- **Transformation Type**: Infrastructure provisioning + CI/CD automation
-- **Primary Changes**: Create CloudFormation templates for EKS/ECR/VPC, GitHub Actions CI/CD pipeline, fix K8s manifest placeholders
-- **Related Components**: k8s/ manifests (update), Dockerfile (no change), application code (no change)
+## Execution Phases
 
-### Change Impact Assessment
-- **User-facing changes**: No — deployment infrastructure only
-- **Structural changes**: No — application architecture unchanged
-- **Data model changes**: No — no schema changes
-- **API changes**: No — REST API unchanged
-- **NFR impact**: No — PoC-level, no NFR extensions enabled
-
-### Component Relationships
-- **Primary Component**: New CloudFormation infrastructure templates
-- **Infrastructure Components**: EKS cluster, ECR repo, VPC, IAM, EBS CSI, ALB Controller
-- **Existing K8s Manifests**: Update ECR_REPO placeholder
-- **CI/CD**: New GitHub Actions workflow
-- **Application Code**: No changes (already built and containerized)
-
-### Risk Assessment
-- **Risk Level**: Low — greenfield infrastructure (new CloudFormation stacks), no changes to running systems
-- **Rollback Complexity**: Easy — CloudFormation stack delete removes all infrastructure
-- **Testing Complexity**: Simple — deploy and verify health endpoints respond
-
-## Workflow Visualization
-
-```mermaid
-flowchart TD
-    Start(["User Request:<br/>Deploy this solution"])
-    
-    subgraph INCEPTION["INCEPTION PHASE"]
-        WD["Workspace Detection<br/>COMPLETED"]
-        RE["Reverse Engineering<br/>COMPLETED"]
-        RA["Requirements Analysis<br/>COMPLETED"]
-        US["User Stories<br/>SKIP"]
-        WP["Workflow Planning<br/>COMPLETED"]
-        AD["Application Design<br/>SKIP"]
-        UG["Units Generation<br/>EXECUTE"]
-    end
-    
-    subgraph CONSTRUCTION["CONSTRUCTION PHASE"]
-        ID["Infrastructure Design<br/>EXECUTE"]
-        CG["Code Generation<br/>EXECUTE"]
-        BT["Build and Test<br/>EXECUTE"]
-    end
-    
-    Start --> WD
-    WD --> RE
-    RE --> RA
-    RA --> WP
-    WP --> UG
-    UG --> ID
-    ID --> CG
-    CG --> BT
-    BT --> End(["Complete"])
-
-    style WD fill:#4CAF50,stroke:#1B5E20,stroke-width:3px,color:#fff
-    style RE fill:#4CAF50,stroke:#1B5E20,stroke-width:3px,color:#fff
-    style RA fill:#4CAF50,stroke:#1B5E20,stroke-width:3px,color:#fff
-    style WP fill:#4CAF50,stroke:#1B5E20,stroke-width:3px,color:#fff
-    style US fill:#BDBDBD,stroke:#424242,stroke-width:2px,stroke-dasharray: 5 5,color:#000
-    style AD fill:#BDBDBD,stroke:#424242,stroke-width:2px,stroke-dasharray: 5 5,color:#000
-    style UG fill:#FFA726,stroke:#E65100,stroke-width:3px,stroke-dasharray: 5 5,color:#000
-    style ID fill:#FFA726,stroke:#E65100,stroke-width:3px,stroke-dasharray: 5 5,color:#000
-    style CG fill:#4CAF50,stroke:#1B5E20,stroke-width:3px,color:#fff
-    style BT fill:#4CAF50,stroke:#1B5E20,stroke-width:3px,color:#fff
-    style Start fill:#CE93D8,stroke:#6A1B9A,stroke-width:3px,color:#000
-    style End fill:#CE93D8,stroke:#6A1B9A,stroke-width:3px,color:#000
-    style INCEPTION fill:#BBDEFB,stroke:#1565C0,stroke-width:3px,color:#000
-    style CONSTRUCTION fill:#C8E6C9,stroke:#2E7D32,stroke-width:3px,color:#000
-    linkStyle default stroke:#333,stroke-width:2px
-```
-
-### Text Alternative
-```
-Phase 1: INCEPTION
-- Workspace Detection (COMPLETED)
-- Reverse Engineering (COMPLETED)
-- Requirements Analysis (COMPLETED)
-- User Stories (SKIP)
-- Workflow Planning (COMPLETED)
-- Application Design (SKIP)
-- Units Generation (EXECUTE)
-
-Phase 2: CONSTRUCTION
-- Functional Design (SKIP)
-- NFR Requirements (SKIP)
-- NFR Design (SKIP)
-- Infrastructure Design (EXECUTE)
-- Code Generation (EXECUTE)
-- Build and Test (EXECUTE)
-```
-
-## Phases to Execute
-
-### INCEPTION PHASE
-- [x] Workspace Detection (COMPLETED)
-- [x] Reverse Engineering (COMPLETED)
-- [x] Requirements Analysis (COMPLETED)
-- [x] User Stories - SKIP
-  - **Rationale**: Infrastructure/deployment work with no user-facing features or personas
-- [x] Workflow Planning (COMPLETED)
-- [ ] Application Design - SKIP
-  - **Rationale**: No new application components; existing app code is unchanged. Only infrastructure and CI/CD code needed.
-- [ ] Units Generation - EXECUTE
-  - **Rationale**: Three distinct units of work (CloudFormation IaC, GitHub Actions CI/CD, K8s manifest fixes) that can be sequenced
+### INCEPTION PHASE (COMPLETED)
+- [x] Workspace Detection
+- [x] Requirements Analysis (reverse engineering artifacts leveraged from main branch)
+- [x] Workflow Planning (this document)
+- [ ] Skipped: User Stories (requirements are clear from existing PoC)
+- [ ] Skipped: Units Generation (single unit of work)
 
 ### CONSTRUCTION PHASE
-- [ ] Functional Design - SKIP
-  - **Rationale**: No business logic to design; infrastructure patterns are well-established
-- [ ] NFR Requirements - SKIP
-  - **Rationale**: PoC-level quality; all NFR extensions opted out
-- [ ] NFR Design - SKIP
-  - **Rationale**: No NFR requirements to incorporate
-- [ ] Infrastructure Design - EXECUTE
-  - **Rationale**: Need to map CloudFormation resources, define stack structure, plan AWS service interactions
-- [ ] Code Generation - EXECUTE (ALWAYS)
-  - **Rationale**: Generate CloudFormation templates, GitHub Actions workflow, update K8s manifests
-- [ ] Build and Test - EXECUTE (ALWAYS)
-  - **Rationale**: Provide deployment instructions and validation steps
 
-### OPERATIONS PHASE
-- [ ] Operations - PLACEHOLDER
+#### Unit 1: AWS-Native Loan Originations (Single Unit)
 
-## Estimated Timeline
-- **Total Stages to Execute**: 4 (Units Generation, Infrastructure Design, Code Generation, Build and Test)
-- **Estimated Duration**: Medium (multiple files across Terraform, GitHub Actions, K8s)
+| Stage | Execute? | Rationale |
+|-------|----------|-----------|
+| Functional Design | YES | Need to define DynamoDB table schemas, event formats, aggregate logic |
+| NFR Requirements | SKIP | Already captured in requirements.md |
+| NFR Design | SKIP | Straightforward serverless patterns |
+| Infrastructure Design | YES | CDK stack design, VPC layout for ElastiCache |
+| Code Generation | YES | Full implementation |
+| Build and Test | YES | CDK synth, unit tests, integration tests |
 
-## Success Criteria
-- **Primary Goal**: Fully automated deployment of Axon PoC to AWS EKS from GitHub push
-- **Key Deliverables**:
-  - CloudFormation templates for EKS, ECR, VPC, IAM
-  - GitHub Actions workflow for CI/CD
-  - Updated K8s manifests with proper ECR URI
-  - Deployment documentation
-- **Quality Gates**:
-  - CloudFormation templates pass `aws cloudformation validate-template`
-  - GitHub Actions workflow syntax is valid
-  - K8s manifests pass validation (kubectl dry-run)
+#### Execution Sequence:
+```
+Functional Design → Infrastructure Design → Code Generation → Build and Test
+```
+
+## Deliverables
+
+### Code Artifacts
+1. `src/` — TypeScript Lambda functions
+   - `src/commands/` — Command handlers (submit, approve, reject, disburse)
+   - `src/queries/` — Query handlers (get all, get by ID, get by status)
+   - `src/projector/` — DynamoDB Streams projector (updates Redis)
+   - `src/events/` — Event type definitions
+   - `src/aggregate/` — Loan aggregate (event replay logic)
+2. `infra/` — AWS CDK TypeScript stack
+3. `test/` — Unit and integration tests
+4. `.github/workflows/deploy.yml` — CI/CD pipeline
+5. `demo.sh` — Interactive demo script
+
+### Documentation
+1. `README.md` — Updated for AWS-native architecture
+2. Architecture diagram
+3. Build and test instructions
+
+## Estimated Stages: 4
+1. Functional Design (~15 min)
+2. Infrastructure Design (~10 min)
+3. Code Generation (~30 min)
+4. Build and Test (~10 min)
+
+## Decision: No Application Design or Units Generation needed
+- Single cohesive unit of work
+- Clear component boundaries from requirements
+- Standard serverless patterns (no novel architecture decisions)
+
+---
+
+**Ready to proceed to Functional Design?**
+
+A) Approve and proceed
+
+B) Request changes to the execution plan
+
+[Answer]: 

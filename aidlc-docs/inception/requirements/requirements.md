@@ -1,78 +1,149 @@
-# Requirements Document
+# Requirements — AWS-Native Loan Originations (CQRS/Event Sourcing)
 
-## Intent Analysis
+## 1. Overview
 
-- **User Request**: Deploy this solution (Axon Framework loan originations PoC)
-- **Request Type**: Deployment / Infrastructure provisioning
-- **Scope Estimate**: System-wide — infrastructure-as-code, CI/CD pipeline, container registry, EKS cluster
-- **Complexity Estimate**: Moderate — well-understood patterns (EKS + ECR + GitHub Actions) but multiple AWS services to orchestrate
-- **Quality Level**: PoC-level — minimal configuration, quick to get running, acceptable shortcuts
+Reimplement the Axon Framework Loan Originations PoC using native AWS services. The solution must demonstrate the same CQRS (Command Query Responsibility Segregation) and Event Sourcing patterns using fully managed AWS infrastructure — no third-party frameworks.
 
-## Functional Requirements
+## 2. Functional Requirements
 
-### FR-1: Infrastructure as Code (CloudFormation)
-Provision all required AWS infrastructure using AWS CloudFormation:
-- EKS cluster (managed node group)
-- ECR repository for the application image
-- VPC with public and private subnets
-- Security groups for cluster and node communication
-- IAM roles for EKS, nodes, and service accounts
-- EBS CSI driver addon (for Axon Server persistent volumes)
-- AWS Load Balancer Controller (for ALB Ingress)
+### FR-1: Loan Application Submission
+- Accept loan application via REST API (POST /api/loans)
+- Validate business rules (amount > 0, required fields)
+- Generate unique loan ID
+- Persist LoanApplicationSubmittedEvent to event store
+- Return loan ID and status
 
-### FR-2: Container Image Build and Push
-- Build the application Docker image
-- Push to Amazon ECR
-- Tag with commit SHA and/or `latest`
+### FR-2: Loan Approval
+- Accept approval command via REST API (POST /api/loans/{id}/approve)
+- Enforce state machine: only SUBMITTED loans can be approved
+- Persist LoanApprovedEvent to event store
+- Return updated status
 
-### FR-3: CI/CD Pipeline (GitHub Actions)
-Fully automated pipeline triggered on push to main:
-1. Build the Spring Boot application (Gradle)
-2. Run tests (if any)
-3. Build Docker image
-4. Push image to ECR
-5. Deploy to EKS (update Kubernetes manifests with new image tag)
+### FR-3: Loan Rejection
+- Accept rejection command via REST API (POST /api/loans/{id}/reject)
+- Enforce state machine: only SUBMITTED loans can be rejected
+- Persist LoanRejectedEvent to event store
+- Return updated status
 
-### FR-4: Kubernetes Deployment
-Deploy application and dependencies to EKS:
-- Axon Server (3-node StatefulSet using existing manifest)
-- Loan Originations application (2-replica Deployment)
-- Services and Ingress (ALB)
-- StorageClass (gp3)
-- Namespace: `axon-poc`
+### FR-4: Loan Disbursement
+- Accept disbursement command via REST API (POST /api/loans/{id}/disburse)
+- Enforce state machine: only APPROVED loans can be disbursed
+- Persist LoanDisbursedEvent to event store
+- Return updated status
 
-### FR-5: Update Existing K8s Manifests
-- Replace `<ECR_REPO>` placeholder in `k8s/loan-app.yaml` with actual ECR repository URI
-- Ensure manifests are compatible with provisioned cluster
+### FR-5: Query All Loans
+- Query all loans via GET /api/loans
+- Read from projection (read model), not event store
+- Return list sorted by submission date descending
 
-## Non-Functional Requirements
+### FR-6: Query Loan by ID
+- Query single loan via GET /api/loans/{id}
+- Read from projection (read model)
+- Return full loan state including timestamps
 
-### NFR-1: PoC Simplicity
-- Minimize configuration complexity
-- Use managed AWS services where possible (EKS managed node groups)
-- Accept PoC-level shortcuts (no TLS, no custom domain, no secrets rotation)
-- Single-region deployment
+### FR-7: Query Loans by Status
+- Query loans filtered by status via GET /api/loans/status/{status}
+- Read from projection (read model)
 
-### NFR-2: Cost Efficiency (PoC)
-- Use smallest viable instance types
-- Single managed node group
-- No multi-AZ for application (Axon Server may still benefit from AZ spread for Raft quorum)
+### FR-8: Event Sourcing — State Reconstruction
+- Aggregate state must be reconstructable from event stream
+- Events are immutable and append-only
+- No direct state mutations in the event store
 
-### NFR-3: Automation
-- Zero manual steps after initial Terraform apply and GitHub Actions setup
-- Subsequent code changes auto-deploy via CI/CD
+### FR-9: CQRS Separation
+- Command side (write) and Query side (read) must be separate
+- Read model updated asynchronously from events
+- Commands validated against reconstructed aggregate state
 
-## Constraints
-- AWS account available, no existing EKS cluster
-- Container registry: Amazon ECR
-- CI/CD: GitHub Actions (repo hosted on GitHub)
-- IaC tool: AWS CloudFormation (native AWS, no third-party tooling required)
-- Quality: PoC-level — no security, resiliency, or PBT extensions enforced
+## 3. Non-Functional Requirements
 
-## Out of Scope
-- Production hardening (TLS, WAF, custom domains, secrets management)
-- Multi-region or DR setup
-- Monitoring and observability stack (CloudWatch, Prometheus, Grafana)
-- Automated testing beyond what exists
-- Security scanning (Trivy, Snyk)
-- Cost optimization (spot instances, Karpenter)
+### NFR-1: Serverless Architecture
+- All compute via AWS Lambda (TypeScript/Node.js)
+- No servers or containers to manage
+- Pay-per-use pricing model
+
+### NFR-2: Event Store
+- Kinesis Data Streams for ordered event streaming
+- DynamoDB for durable event persistence
+- Events ordered per aggregate (partition key = aggregate ID)
+
+### NFR-3: Read Model
+- ElastiCache (Redis) for low-latency query responses
+- Updated via DynamoDB Streams → Lambda projector
+- Eventually consistent with write model
+
+### NFR-4: API Layer
+- API Gateway (REST API) with Lambda integration
+- Request validation at API Gateway level
+- Proper HTTP status codes (201 Created, 400 Bad Request, 409 Conflict, 404 Not Found)
+
+### NFR-5: Infrastructure as Code
+- AWS CDK (TypeScript) for all infrastructure
+- Single `cdk deploy` to provision entire stack
+- Environment parameterization (dev/staging/prod)
+
+### NFR-6: CI/CD
+- GitHub Actions workflow
+- Build, test, and deploy on push to `aws-native` branch
+- CDK diff on PR, deploy on merge
+
+### NFR-7: Observability
+- CloudWatch Logs for all Lambda functions
+- CloudWatch Metrics for API latency and error rates
+- X-Ray tracing for end-to-end request visibility
+
+### NFR-8: Security
+- IAM least-privilege for all Lambda roles
+- API Gateway with API key or IAM auth (configurable)
+- Encryption at rest (DynamoDB, ElastiCache, Kinesis)
+- VPC for ElastiCache (private subnet)
+
+## 4. Architecture Summary
+
+```
+┌──────────────┐     ┌────────────┐     ┌──────────────┐     ┌─────────────────┐
+│  API Gateway │────▶│  Command   │────▶│   Kinesis    │────▶│   DynamoDB      │
+│  (REST API)  │     │  Lambda    │     │ Data Stream  │     │  (Event Store)  │
+└──────────────┘     └────────────┘     └──────────────┘     └────────┬────────┘
+       │                                                              │
+       │                                                    DynamoDB Streams
+       │                                                              │
+       │                                                              ▼
+       │             ┌────────────┐                         ┌──────────────────┐
+       │             │   Query    │◀────────────────────────│  Projector       │
+       └────────────▶│   Lambda   │                         │  Lambda          │
+                     └─────┬──────┘                         └──────────────────┘
+                           │
+                           ▼
+                     ┌────────────┐
+                     │ ElastiCache│
+                     │  (Redis)   │
+                     └────────────┘
+```
+
+### Command Flow:
+1. API Gateway receives POST request
+2. Command Lambda validates business rules by replaying events from DynamoDB
+3. If valid, publishes new event to Kinesis Data Stream
+4. Kinesis consumer Lambda persists event to DynamoDB (Event Store)
+
+### Query Flow:
+1. DynamoDB Streams trigger Projector Lambda on new events
+2. Projector Lambda updates Redis read model
+3. API Gateway receives GET request
+4. Query Lambda reads from Redis and returns response
+
+## 5. Technology Stack
+
+| Component | AWS Service | Purpose |
+|-----------|-------------|---------|
+| API | API Gateway (REST) | HTTP endpoints |
+| Compute | Lambda (Node.js 20) | Business logic |
+| Event Bus | Kinesis Data Streams | Ordered event delivery |
+| Event Store | DynamoDB | Durable event persistence |
+| Read Model | ElastiCache (Redis) | Low-latency queries |
+| Change Capture | DynamoDB Streams | Trigger projections |
+| IaC | AWS CDK (TypeScript) | Infrastructure definition |
+| CI/CD | GitHub Actions | Automated deployment |
+| Observability | CloudWatch + X-Ray | Logs, metrics, tracing |
+| Language | TypeScript | Lambda runtime |
