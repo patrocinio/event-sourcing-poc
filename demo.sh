@@ -1,31 +1,41 @@
 #!/bin/bash
 ###############################################################################
-# AWS-Native CQRS/Event Sourcing — Live Demo Script
+# AWS-Native CQRS/Event Sourcing — Live Demo Script (Multi-Region)
 #
-# This demonstrates the same Loan Originations patterns as the Axon PoC,
-# but implemented entirely with native AWS services:
-#   - API Gateway (REST API)
+# This demonstrates CQRS/Event Sourcing with native AWS services in an
+# active-active multi-region deployment (us-east-1 + us-west-2):
+#   - API Gateway (REST API) per region
 #   - Lambda (TypeScript) for compute
-#   - DynamoDB (Event Store)
+#   - DynamoDB Global Tables (event store with cross-region replication)
 #   - Kinesis Data Streams (event distribution)
-#   - ElastiCache Redis (read model / projection)
+#   - ElastiCache Redis Multi-AZ (read model / projection)
 #
 # Usage:
-#   export API_URL=$(aws cloudformation describe-stacks --stack-name LoanOriginationsApi \
-#     --query 'Stacks[0].Outputs[?OutputKey==`ApiUrl`].OutputValue' --output text)
 #   ./demo.sh
+#   (auto-discovers endpoints from CloudFormation stacks)
 ###############################################################################
 
 set -e
 
-BASE="${API_URL:-${1:-$(aws cloudformation describe-stacks --stack-name LoanOriginationsApi --query 'Stacks[0].Outputs[?OutputKey==`ApiUrl`].OutputValue' --output text 2>/dev/null)}}"
-if [ -z "$BASE" ] || [ "$BASE" = "None" ]; then
-  echo "  ERROR: Could not determine API URL."
-  echo "  Either set API_URL env var, pass as argument, or ensure LoanOriginationsApi stack is deployed."
+# Auto-discover regional endpoints
+PRIMARY="${PRIMARY_URL:-$(aws cloudformation describe-stacks --stack-name LoanOriginationsPrimary --region us-east-1 --query 'Stacks[0].Outputs[?OutputKey==`ApiUrl`].OutputValue' --output text 2>/dev/null)}"
+SECONDARY="${SECONDARY_URL:-$(aws cloudformation describe-stacks --stack-name LoanOriginationsSecondary --region us-west-2 --query 'Stacks[0].Outputs[?OutputKey==`ApiUrl`].OutputValue' --output text 2>/dev/null)}"
+
+PRIMARY="${PRIMARY%/}"
+SECONDARY="${SECONDARY%/}"
+
+if [ -z "$PRIMARY" ] || [ "$PRIMARY" = "None" ]; then
+  echo "  ERROR: Could not determine Primary API URL (us-east-1)."
+  echo "  Set PRIMARY_URL env var or deploy LoanOriginationsPrimary stack."
   exit 1
 fi
-# Remove trailing slash
-BASE="${BASE%/}"
+if [ -z "$SECONDARY" ] || [ "$SECONDARY" = "None" ]; then
+  echo "  WARNING: Secondary region (us-west-2) not available. Cross-region tests will be skipped."
+  SECONDARY=""
+fi
+
+# Use PRIMARY as default BASE for single-region parts
+BASE="$PRIMARY"
 
 BOLD="\033[1m"
 GREEN="\033[1;32m"
@@ -62,34 +72,32 @@ header "AWS-NATIVE CQRS & EVENT SOURCING DEMO"
 echo ""
 echo "  This demo showcases a Loan Originations system built with:"
 echo ""
-echo "    • API Gateway     — REST API endpoints"
+echo "    • API Gateway     — REST API endpoints (per region)"
 echo "    • Lambda          — Command & Query handlers (TypeScript)"
-echo "    • DynamoDB        — Event Store (append-only)"
+echo "    • DynamoDB        — Global Tables Event Store (multi-region)"
 echo "    • Kinesis Streams — Event distribution"
-echo "    • ElastiCache     — Redis read model (projection)"
+echo "    • ElastiCache     — Redis Multi-AZ read model (per region)"
 echo ""
-echo "  Architecture (same CQRS/ES pattern, pure AWS services):"
+echo "  Multi-Region Active-Active Architecture:"
 echo ""
-echo "    ┌──────────────┐     ┌────────────┐     ┌──────────────┐"
-echo "    │  API Gateway │────▶│  Command   │────▶│  DynamoDB    │"
-echo "    │  (REST API)  │     │  Lambda    │     │ (Event Store)│"
-echo "    └──────────────┘     └────────────┘     └──────┬───────┘"
-echo "          │                                        │"
-echo "          │                              DynamoDB Streams"
-echo "          │                                        │"
-echo "          │                                        ▼"
-echo "          │             ┌────────────┐    ┌────────────────┐"
-echo "          └────────────▶│   Query    │    │   Projector    │"
-echo "                        │   Lambda   │    │    Lambda      │"
-echo "                        └─────┬──────┘    └───────┬────────┘"
-echo "                              │                    │"
-echo "                              ▼                    ▼"
-echo "                        ┌──────────────────────────────┐"
-echo "                        │   ElastiCache (Redis)        │"
-echo "                        │   Read Model / Projection    │"
-echo "                        └──────────────────────────────┘"
+echo "                    Route53 (Latency-Based Routing)"
+echo "                         │"
+echo "            ┌────────────┼────────────┐"
+echo "            ▼                         ▼"
+echo "    ┌──────────────┐          ┌──────────────┐"
+echo "    │  us-east-1   │          │  us-west-2   │"
+echo "    │  API Gateway │          │  API Gateway │"
+echo "    │  Lambda      │          │  Lambda      │"
+echo "    │  Redis (3AZ) │          │  Redis (3AZ) │"
+echo "    └──────┬───────┘          └──────┬───────┘"
+echo "           │                         │"
+echo "           └──── DynamoDB Global ────┘"
+echo "                  Tables (sync)"
 echo ""
-echo -e "  Endpoint: ${BOLD}${BASE}${RESET}"
+echo -e "  ${BOLD}Primary (us-east-1):${RESET}   ${PRIMARY}"
+if [ -n "$SECONDARY" ]; then
+echo -e "  ${BOLD}Secondary (us-west-2):${RESET}  ${SECONDARY}"
+fi
 
 pause
 
@@ -231,7 +239,89 @@ curl -s "${BASE}/api/loans/status/REJECTED" | jq '.' 2>/dev/null
 pause
 
 ###############################################################################
-header "PART 7: AWS SERVICES vs AXON FRAMEWORK — Comparison"
+header "PART 7: CROSS-REGION ACTIVE-ACTIVE — DynamoDB Global Tables"
+###############################################################################
+
+if [ -z "$SECONDARY" ]; then
+  explain "Secondary region not deployed. Skipping cross-region test."
+else
+  explain "This is the key production-readiness feature: ACTIVE-ACTIVE multi-region."
+  explain "Both us-east-1 and us-west-2 can serve reads AND writes simultaneously."
+  explain "DynamoDB Global Tables replicate events bi-directionally (<1s latency)."
+  echo ""
+  echo -e "  ${BOLD}Primary (us-east-1):${RESET}   ${PRIMARY}"
+  echo -e "  ${BOLD}Secondary (us-west-2):${RESET}  ${SECONDARY}"
+  echo ""
+
+  step "Step 1: Submit a loan on PRIMARY (us-east-1)..."
+  echo ""
+  CROSS_RESULT=$(curl -s -X POST "${PRIMARY}/api/loans" \
+    -H "Content-Type: application/json" \
+    -d '{"applicantName":"Cross-Region Test","requestedAmount":200000,"purpose":"Multi-Region Active-Active Demo"}')
+  echo "  $CROSS_RESULT" | jq '.' 2>/dev/null
+  CROSS_LOAN_ID=$(echo "$CROSS_RESULT" | jq -r '.loanId' 2>/dev/null)
+
+  pause
+
+  step "Step 2: Approve the loan on SECONDARY (us-west-2)..."
+  explain "(Events replicated via DynamoDB Global Tables in <1 second)"
+  echo ""
+  sleep 3  # Allow replication
+  APPROVE_RESULT=$(curl -s -X POST "${SECONDARY}/api/loans/${CROSS_LOAN_ID}/approve" \
+    -H "Content-Type: application/json" \
+    -d '{"approvedAmount":195000,"approvedBy":"West Coast Manager"}')
+  echo "  $APPROVE_RESULT" | jq '.' 2>/dev/null
+
+  echo ""
+  explain "The Secondary region's Command Lambda:"
+  explain "  1. Queried DynamoDB (local us-west-2 replica) for this loan's events"
+  explain "  2. Found the LoanApplicationSubmittedEvent (replicated from us-east-1)"
+  explain "  3. Validated: status=SUBMITTED, approve is valid"
+  explain "  4. Wrote LoanApprovedEvent to DynamoDB (us-west-2 replica)"
+  explain "  5. That event replicates back to us-east-1 automatically"
+
+  pause
+
+  step "Step 3: Disburse on PRIMARY (us-east-1) — reading approval from us-west-2..."
+  echo ""
+  sleep 3  # Allow replication back
+  DISBURSE_RESULT=$(curl -s -X POST "${PRIMARY}/api/loans/${CROSS_LOAN_ID}/disburse" \
+    -H "Content-Type: application/json" \
+    -d '{"disbursementAccount":"ACH-CROSS-REGION-001"}')
+  echo "  $DISBURSE_RESULT" | jq '.' 2>/dev/null
+
+  echo ""
+  explain "Primary region saw the approval event (replicated from us-west-2)"
+  explain "and successfully processed the disbursement."
+
+  pause
+
+  step "Step 4: Verify final state from both regions..."
+  echo ""
+  sleep 3
+  echo -e "  ${BOLD}From PRIMARY (us-east-1):${RESET}"
+  curl -s "${PRIMARY}/api/loans/${CROSS_LOAN_ID}" | jq '.status, .approvedBy' 2>/dev/null
+  echo ""
+  echo -e "  ${BOLD}From SECONDARY (us-west-2):${RESET}"
+  curl -s "${SECONDARY}/api/loans/${CROSS_LOAN_ID}" | jq '.status, .approvedBy' 2>/dev/null
+
+  echo ""
+  explain "Both regions show DISBURSED — perfect consistency via Global Tables."
+  echo ""
+  echo "  Timeline of this loan across regions:"
+  echo "    ┌────────────────────────────────────────────────────────────┐"
+  echo "    │  us-east-1: Submit ──────────────────────── Disburse      │"
+  echo "    │               │                              ▲             │"
+  echo "    │               │   DynamoDB Global Tables     │             │"
+  echo "    │               ▼   (bi-directional sync)      │             │"
+  echo "    │  us-west-2:        ──────── Approve ─────────             │"
+  echo "    └────────────────────────────────────────────────────────────┘"
+fi
+
+pause
+
+###############################################################################
+header "PART 8: AWS SERVICES vs AXON FRAMEWORK — Comparison"
 ###############################################################################
 
 echo ""
