@@ -111,9 +111,9 @@ box(CMD1_X, CMD1_Y, CMD1_W, CMD1_H, ORANGE, '#CC7A00', 'Command Lambda')
 CMD1_CX = CMD1_X + CMD1_W // 2
 arrow_down(CMD1_CX, CMD1_Y + CMD1_H, DDB_TOP, DARK_BLUE, label="write event")
 
-# Kinesis — BELOW the Command Lambda, offset left so it doesn't overlap the arrow
-box(80, 385, 150, 26, DARK_BLUE, '#13476B', 'Kinesis (2 shards)')
-arrow_line(CMD1_X + 20, CMD1_Y + CMD1_H, 155, 385, DARK_BLUE, 1)
+# Kinesis — centered like API Gateway
+box(200, 385, 250, 26, DARK_BLUE, '#13476B', 'Kinesis (2 shards)')
+arrow_line(CMD1_X + 20, CMD1_Y + CMD1_H, 325, 385, DARK_BLUE, 1)
 
 # Query -> Redis (outer column, clear of DDB)
 QRY1_CX = QRY1_X + QRY1_W // 2
@@ -149,9 +149,9 @@ box(QRY2_X, QRY2_Y, QRY2_W, QRY2_H, ORANGE, '#CC7A00', 'Query Lambda')
 CMD2_CX = CMD2_X + CMD2_W // 2
 arrow_down(CMD2_CX, CMD2_Y + CMD2_H, DDB_TOP, DARK_BLUE, label="write event", label_side='left')
 
-# Kinesis — offset right
-box(1170, 385, 150, 26, DARK_BLUE, '#13476B', 'Kinesis (2 shards)')
-arrow_line(CMD2_X + CMD2_W - 20, CMD2_Y + CMD2_H, 1245, 385, DARK_BLUE, 1)
+# Kinesis — centered like API Gateway
+box(900, 385, 250, 26, DARK_BLUE, '#13476B', 'Kinesis (2 shards)')
+arrow_line(CMD2_X + CMD2_W - 20, CMD2_Y + CMD2_H, 1025, 385, DARK_BLUE, 1)
 
 # Query -> Redis (outer)
 QRY2_CX = QRY2_X + QRY2_W // 2
