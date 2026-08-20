@@ -99,15 +99,9 @@ spec:
               valueFrom:
                 fieldRef:
                   fieldPath: metadata.name
-            # Enable access control (authentication)
+            # Disable access control for PoC simplicity
             - name: AXONIQ_AXONSERVER_ACCESSCONTROL_ENABLED
-              value: "true"
-            # Token used for both internal and client communication
-            - name: AXONIQ_AXONSERVER_ACCESSCONTROL_TOKEN
-              valueFrom:
-                secretKeyRef:
-                  name: axon-server-token
-                  key: token
+              value: "false"
           resources:
             requests:
               cpu: "500m"

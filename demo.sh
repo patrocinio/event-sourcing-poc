@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 ###############################################################################
 # Axon Framework CQRS/Event Sourcing — Live Demo Script
 #
@@ -28,15 +28,15 @@
 #   Then open: http://localhost:8024
 ###############################################################################
 
-set -e
+# Don't exit on errors — this is an interactive demo script
 
 BASE="${1:-${LOAN_APP_URL:-http://LOAN-APP-NLB-URL}}"
-BOLD="\033[1m"
-GREEN="\033[1;32m"
-CYAN="\033[1;36m"
-YELLOW="\033[1;33m"
-RED="\033[1;31m"
-RESET="\033[0m"
+BOLD=$'\033[1m'
+GREEN=$'\033[1;32m'
+CYAN=$'\033[1;36m'
+YELLOW=$'\033[1;33m'
+RED=$'\033[1;31m'
+RESET=$'\033[0m'
 
 pause() {
   echo ""
@@ -45,18 +45,18 @@ pause() {
 }
 
 header() {
-  echo ""
-  echo -e "${CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${RESET}"
-  echo -e "${BOLD}  $1${RESET}"
-  echo -e "${CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${RESET}"
+  printf "\n"
+  printf "%b\n" "${CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${RESET}"
+  printf "%b\n" "${BOLD}  $1${RESET}"
+  printf "%b\n" "${CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${RESET}"
 }
 
 step() {
-  echo -e "  ${GREEN}→${RESET} $1"
+  printf "%b\n" "  ${GREEN}→${RESET} $1"
 }
 
 explain() {
-  echo -e "  ${YELLOW}ℹ${RESET} $1"
+  printf "%b\n" "  ${YELLOW}ℹ${RESET} $1"
 }
 
 ###############################################################################
@@ -84,7 +84,7 @@ echo "    │  Projection │◀────────────────
 echo "    │ (Read Model) │                                           │(Event Handler)│"
 echo "    └─────────────┘                                            └──────────────┘"
 echo ""
-echo -e "  Endpoint: ${BOLD}${BASE}${RESET}"
+printf "%b\n" "  Endpoint: ${BOLD}${BASE}${RESET}"
 
 pause
 
@@ -287,7 +287,7 @@ PF_PID=$!
 sleep 3
 echo "  Port-forward started (PID: ${PF_PID})"
 echo ""
-echo -e "  ${BOLD}Dashboard URL:${RESET} ${AXON_DASHBOARD}"
+printf "%b\n" "  ${BOLD}Dashboard URL:${RESET} ${AXON_DASHBOARD}"
 echo ""
 step "Opening Axon Server Dashboard in browser..."
 open "${AXON_DASHBOARD}" 2>/dev/null || echo "  Open the URL above in your browser"
@@ -356,7 +356,7 @@ explain "Now let's look at a single loan's complete history:"
 echo ""
 echo "  Steps:"
 echo "    1. In the Search page, paste this Aggregate ID:"
-echo -e "       ${BOLD}${LOAN_ID}${RESET}"
+printf "%b\n" "       ${BOLD}${LOAN_ID}${RESET}"
 echo "    2. Click 'Search'"
 echo ""
 echo "  Result — the complete lifecycle of Maria Garcia's loan:"
@@ -426,7 +426,7 @@ echo "  │  ✓ Location transparency — components can run anywhere          
 echo "  │  ✓ Ready for microservice decomposition                          │"
 echo "  └─────────────────────────────────────────────────────────────────┘"
 echo ""
-echo -e "  ${GREEN}Demo complete!${RESET}"
+printf "%b\n" "  ${GREEN}Demo complete!${RESET}"
 echo ""
 
 # Cleanup port-forward
