@@ -15,11 +15,11 @@
 #   (auto-discovers endpoints from CloudFormation stacks)
 ###############################################################################
 
-set -e
+# Don't exit on errors — this is an interactive demo script
 
 # Auto-discover regional endpoints
-PRIMARY="${PRIMARY_URL:-$(aws cloudformation describe-stacks --stack-name LoanOriginationsPrimary --region us-east-1 --query 'Stacks[0].Outputs[?OutputKey==`ApiUrl`].OutputValue' --output text 2>/dev/null)}"
-SECONDARY="${SECONDARY_URL:-$(aws cloudformation describe-stacks --stack-name LoanOriginationsSecondary --region us-west-2 --query 'Stacks[0].Outputs[?OutputKey==`ApiUrl`].OutputValue' --output text 2>/dev/null)}"
+PRIMARY="${PRIMARY_URL:-$(aws cloudformation describe-stacks --stack-name LoanOriginationsPrimary --region us-east-1 --query 'Stacks[0].Outputs[?OutputKey==`ApiUrl`].OutputValue' --output text 2>/dev/null || echo "")}"
+SECONDARY="${SECONDARY_URL:-$(aws cloudformation describe-stacks --stack-name LoanOriginationsSecondary --region us-west-2 --query 'Stacks[0].Outputs[?OutputKey==`ApiUrl`].OutputValue' --output text 2>/dev/null || echo "")}"
 
 PRIMARY="${PRIMARY%/}"
 SECONDARY="${SECONDARY%/}"
@@ -37,12 +37,12 @@ fi
 # Use PRIMARY as default BASE for single-region parts
 BASE="$PRIMARY"
 
-BOLD="\033[1m"
-GREEN="\033[1;32m"
-CYAN="\033[1;36m"
-YELLOW="\033[1;33m"
-RED="\033[1;31m"
-RESET="\033[0m"
+BOLD=$'\033[1m'
+GREEN=$'\033[1;32m'
+CYAN=$'\033[1;36m'
+YELLOW=$'\033[1;33m'
+RED=$'\033[1;31m'
+RESET=$'\033[0m'
 
 pause() {
   echo ""
@@ -52,17 +52,17 @@ pause() {
 
 header() {
   echo ""
-  echo -e "${CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${RESET}"
-  echo -e "${BOLD}  $1${RESET}"
-  echo -e "${CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${RESET}"
+  printf "%b\n" "${CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${RESET}"
+  printf "%b\n" "${BOLD}  $1${RESET}"
+  printf "%b\n" "${CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${RESET}"
 }
 
 step() {
-  echo -e "  ${GREEN}→${RESET} $1"
+  printf "%b\n" "  ${GREEN}→${RESET} $1"
 }
 
 explain() {
-  echo -e "  ${YELLOW}ℹ${RESET} $1"
+  printf "%b\n" "  ${YELLOW}ℹ${RESET} $1"
 }
 
 ###############################################################################
@@ -94,9 +94,9 @@ echo "           │                         │"
 echo "           └──── DynamoDB Global ────┘"
 echo "                  Tables (sync)"
 echo ""
-echo -e "  ${BOLD}Primary (us-east-1):${RESET}   ${PRIMARY}"
+printf "%b\n" "  ${BOLD}Primary (us-east-1):${RESET}   ${PRIMARY}"
 if [ -n "$SECONDARY" ]; then
-echo -e "  ${BOLD}Secondary (us-west-2):${RESET}  ${SECONDARY}"
+printf "%b\n" "  ${BOLD}Secondary (us-west-2):${RESET}  ${SECONDARY}"
 fi
 
 pause
@@ -249,8 +249,8 @@ else
   explain "Both us-east-1 and us-west-2 can serve reads AND writes simultaneously."
   explain "DynamoDB Global Tables replicate events bi-directionally (<1s latency)."
   echo ""
-  echo -e "  ${BOLD}Primary (us-east-1):${RESET}   ${PRIMARY}"
-  echo -e "  ${BOLD}Secondary (us-west-2):${RESET}  ${SECONDARY}"
+  printf "%b\n" "  ${BOLD}Primary (us-east-1):${RESET}   ${PRIMARY}"
+  printf "%b\n" "  ${BOLD}Secondary (us-west-2):${RESET}  ${SECONDARY}"
   echo ""
 
   step "Step 1: Submit a loan on PRIMARY (us-east-1)..."
@@ -299,10 +299,10 @@ else
   step "Step 4: Verify final state from both regions..."
   echo ""
   sleep 3
-  echo -e "  ${BOLD}From PRIMARY (us-east-1):${RESET}"
+  printf "%b\n" "  ${BOLD}From PRIMARY (us-east-1):${RESET}"
   curl -s "${PRIMARY}/api/loans/${CROSS_LOAN_ID}" | jq '.status, .approvedBy' 2>/dev/null
   echo ""
-  echo -e "  ${BOLD}From SECONDARY (us-west-2):${RESET}"
+  printf "%b\n" "  ${BOLD}From SECONDARY (us-west-2):${RESET}"
   curl -s "${SECONDARY}/api/loans/${CROSS_LOAN_ID}" | jq '.status, .approvedBy' 2>/dev/null
 
   echo ""
@@ -343,5 +343,5 @@ echo ""
 explain "Same pattern (CQRS/ES), different implementation."
 explain "AWS-native approach: no servers, auto-scaling, pay-per-use."
 echo ""
-echo -e "  ${GREEN}Demo complete!${RESET}"
+printf "%b\n" "  ${GREEN}Demo complete!${RESET}"
 echo ""
