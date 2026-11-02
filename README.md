@@ -117,7 +117,7 @@ The database endpoints keep their names, but their roles swap. The application l
 |-----------|---------|
 | API | API Gateway (REST, IAM auth) + WAF, per region |
 | Compute | Lambda (Node.js 20, TypeScript, ARM64, X-Ray) |
-| Event Store | Aurora PostgreSQL 16.6 Serverless v2 Global Database — us-east-1 writer |
+| Event Store | Aurora PostgreSQL 16.13 Serverless v2 Global Database — us-east-1 writer |
 | Read Model | Aurora PostgreSQL — `loans` table via each region's replicas |
 | Event Bus | Kinesis Data Streams in us-east-1 (drives the projector) |
 | DB driver | `pg` (TLS with certificate verification) + Secrets Manager credentials |

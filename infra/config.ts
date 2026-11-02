@@ -22,10 +22,10 @@ export const DB_USERNAME = 'loanadmin';
 
 /**
  * Engine version used by BOTH clusters. A global secondary must run exactly
- * the same engine version as the primary. 16.6 supports global write
+ * the same engine version as the primary. 16.13 supports global write
  * forwarding for Aurora PostgreSQL (>= 16.4).
  */
-export const AURORA_ENGINE_VERSION = rds.AuroraPostgresEngineVersion.VER_16_6;
+export const AURORA_ENGINE_VERSION = rds.AuroraPostgresEngineVersion.VER_16_13;
 
 /** Serverless v2 capacity range (ACUs) for every instance in both regions. */
 export const SERVERLESS_V2_MIN_ACU = 0.5;
