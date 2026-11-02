@@ -1,14 +1,14 @@
 {
   "name": "aurora-loan-originations",
   "version": "1.0.0",
-  "description": "CQRS/Event Sourcing Loan Originations on Aurora PostgreSQL Serverless v2 (aurora branch)",
+  "description": "CQRS/Event Sourcing Loan Originations on an Aurora PostgreSQL Serverless v2 Global Database (us-east-1 primary, us-west-2 secondary)",
   "scripts": {
     "build": "tsc",
     "test": "jest",
     "cdk": "cdk",
-    "synth": "cdk synth LoanOriginationsAurora",
-    "deploy": "cdk deploy LoanOriginationsAurora --require-approval never",
-    "destroy": "cdk destroy LoanOriginationsAurora --force"
+    "synth": "cdk synth --all",
+    "deploy": "cdk deploy --all --require-approval never",
+    "destroy": "cdk destroy --all --force"
   },
   "devDependencies": {
     "@types/aws-lambda": "^8.10.136",

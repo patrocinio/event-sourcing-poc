@@ -18,7 +18,9 @@ import { DomainEvent, EventTypes, createEvent } from '../domain/events';
 import { rehydrate, validateCommand } from '../domain/aggregate';
 import { getPool, isUniqueViolation } from '../shared/db';
 
-const kinesis = new KinesisClient({});
+// The stream lives in the primary region only; the secondary region sets
+// KINESIS_REGION so its command Lambda publishes cross-region.
+const kinesis = new KinesisClient({ region: process.env.KINESIS_REGION || undefined });
 
 /** Thrown when another writer already appended this (aggregate_id, version). */
 class ConcurrencyError extends Error {}
@@ -181,7 +183,11 @@ async function handleLoanAction(
 }
 
 async function loadEvents(aggregateId: string): Promise<DomainEvent[]> {
-  // Read from the WRITER: command validation needs read-your-writes consistency.
+  // Read from the WRITER pool: command validation needs read-your-writes.
+  // In the secondary region this is the write-forwarding cluster endpoint:
+  // SESSION consistency covers this session's own writes, but another
+  // region's latest event may not have replicated yet. That is safe — a stale
+  // version makes the INSERT hit the (aggregate_id, version) PK -> 409, retry.
   const pool = await getPool('writer');
   const result = await pool.query(
     `SELECT aggregate_id, version, event_type, occurred_at, payload

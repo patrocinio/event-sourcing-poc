@@ -8,8 +8,13 @@
  *     'reader' -> DB_READER_HOST (reader endpoint: query side)
  * - TLS is always on with certificate verification. The RDS CA bundle is
  *   provided to Node via NODE_EXTRA_CA_CERTS=/var/runtime/ca-cert.pem.
+ * - Aurora Global Database secondary (DB_WRITE_FORWARDING=true): the writer
+ *   host is the secondary cluster endpoint, which forwards writes to the
+ *   primary writer. Every new writer connection runs
+ *   `SET apg_write_forward.consistency_mode = 'SESSION'` before it is handed
+ *   out, so a session always reads its own forwarded writes.
  */
-import { Pool, PoolClient } from 'pg';
+import { ClientBase, Pool, PoolClient } from 'pg';
 import {
   SecretsManagerClient,
   GetSecretValueCommand,
@@ -67,6 +72,8 @@ export async function getPool(role: DbRole): Promise<Pool> {
   // Re-check after the await in case a concurrent caller created it.
   if (pools[role]) return pools[role]!;
 
+  const writeForwarding = role === 'writer' && isWriteForwardingEnabled();
+
   const pool = new Pool({
     host,
     port: Number(process.env.DB_PORT || secret.port || 5432),
@@ -79,6 +86,11 @@ export async function getPool(role: DbRole): Promise<Pool> {
     idleTimeoutMillis: 30_000,
     connectionTimeoutMillis: 5_000,
     statement_timeout: 10_000,
+    // pg-pool awaits onConnect before handing out a NEW client (pool.connect
+    // and pool.query alike). If it rejects, the client is closed and the error
+    // is returned to the caller, so no connection is ever used without the
+    // session consistency mode.
+    ...(writeForwarding ? { onConnect: setWriteForwardConsistency } : {}),
   });
   // An idle client error must not crash the Lambda process; drop the pool so
   // the next invocation rebuilds it.
@@ -88,6 +100,24 @@ export async function getPool(role: DbRole): Promise<Pool> {
   });
   pools[role] = pool;
   return pool;
+}
+
+/** True when this region's writer endpoint is an Aurora global secondary with write forwarding. */
+export function isWriteForwardingEnabled(): boolean {
+  return process.env.DB_WRITE_FORWARDING === 'true';
+}
+
+/** Session-level read-after-write consistency for forwarded writes. */
+export const WRITE_FORWARD_CONSISTENCY_SQL =
+  "SET apg_write_forward.consistency_mode = 'SESSION'";
+
+async function setWriteForwardConsistency(client: ClientBase): Promise<void> {
+  try {
+    await client.query(WRITE_FORWARD_CONSISTENCY_SQL);
+  } catch (err) {
+    console.error('Failed to set apg_write_forward.consistency_mode on new connection:', err);
+    throw err; // pg-pool ends this client and fails the acquire
+  }
 }
 
 /** Runs fn inside a transaction on the given endpoint. */

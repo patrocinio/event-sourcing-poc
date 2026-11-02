@@ -39,5 +39,8 @@ jobs:
         with:
           role-to-assume: ${{ secrets.AWS_DEPLOY_ROLE_ARN }}
           aws-region: us-east-1
-      - name: CDK Deploy
-        run: npx cdk deploy LoanOriginationsAurora --require-approval never
+      # Deploys LoanOriginationsAuroraPrimary (us-east-1) and then
+      # LoanOriginationsAuroraSecondary (us-west-2); CDK orders them by the
+      # stack dependency. CDK must be bootstrapped in both regions.
+      - name: CDK Deploy (both regions)
+        run: npx cdk deploy --all --require-approval never

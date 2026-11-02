@@ -2,6 +2,7 @@
  * Loan read-model projection — pure functions, no I/O.
  *
  * - projectEvent: (current row, event) -> next row | null (null = no change)
+ * - projectAll:   full event history (any order, duplicates allowed) -> row | null
  * - toLoanView:   row -> API JSON (same field names the Redis read model used)
  *
  * Idempotency: an event whose version is <= the row's last_version has already
@@ -114,6 +115,28 @@ export function projectEvent(current: LoanRow | null, event: DomainEvent): LoanR
     default:
       return null;
   }
+}
+
+/**
+ * Fold an aggregate's complete event history into its projection row.
+ *
+ * Order-insensitive: events are sorted by version and duplicate versions are
+ * dropped (first occurrence wins — the event store's (aggregate_id, version)
+ * PK means a version has exactly one event), so any permutation or repeated
+ * delivery of the same history yields the same row. Returns null when the
+ * history produces no row (e.g. empty, or no LoanApplicationSubmitted).
+ */
+export function projectAll(events: readonly DomainEvent[]): LoanRow | null {
+  const seen = new Set<number>();
+  const ordered = [...events]
+    .sort((a, b) => a.version - b.version)
+    .filter((e) => (seen.has(e.version) ? false : (seen.add(e.version), true)));
+
+  let row: LoanRow | null = null;
+  for (const e of ordered) {
+    row = projectEvent(row, e) ?? row;
+  }
+  return row;
 }
 
 /** Raw row as returned by node-postgres (numeric -> string, timestamptz -> Date). */

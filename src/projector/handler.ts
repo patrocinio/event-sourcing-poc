@@ -1,30 +1,41 @@
 /**
- * Projector Lambda — builds the `loans` read model from the Kinesis event stream.
+ * Projector Lambda — builds the `loans` read model (primary region only).
  *
- * The command handler commits each event to the Aurora `events` table and then
- * publishes it to Kinesis (partition key = aggregateId, so per-loan order is
- * preserved within a shard). This Lambda consumes the stream and upserts the
- * projection on the WRITER endpoint; the query side reads it from the reader.
+ * Command Lambdas in BOTH regions commit each event to the Aurora `events`
+ * table (the secondary via global write forwarding) and then publish it to
+ * the single Kinesis stream in the primary region. Because publishes come
+ * from two regions, Kinesis can deliver a loan's events out of order (e.g. v3
+ * from us-east-1 before v2 from us-west-2).
  *
- * Idempotency: Kinesis delivery is at-least-once. Each update is guarded by
- * `last_version`, both in the pure mapping (projectEvent) and in the SQL
- * upsert, so duplicates and stale replays are no-ops.
+ * The projector is therefore order-insensitive: a Kinesis record is only a
+ * NOTIFICATION that aggregate X changed. For each notified aggregate, inside
+ * one writer transaction it:
+ *   1. locks the current `loans` row (SELECT ... FOR UPDATE),
+ *   2. loads ALL events for the aggregate from `events` on the WRITER
+ *      (the source of truth; every committed event is visible there),
+ *   3. folds them with projectAll (sorted by version, deduplicated),
+ *   4. upserts guarded by `WHERE loans.last_version < EXCLUDED.last_version`.
  *
- * The read model is disposable: it can be rebuilt at any time by replaying
- * the `events` table through projectEvent.
+ * Duplicates, replays and reordering are all no-ops or converge to the same
+ * row. The projection is written once, on the global primary writer, and
+ * reaches the us-west-2 replicas through Aurora Global Database replication.
  */
 import { KinesisStreamEvent, KinesisStreamRecord } from 'aws-lambda';
 import type { PoolClient } from 'pg';
 import { DomainEvent } from '../domain/events';
 import { withTransaction } from '../shared/db';
-import { LoanRow, fromDbRow, projectEvent } from '../shared/loan-projection';
+import { LoanRow, fromDbRow, projectAll } from '../shared/loan-projection';
 
 export async function handler(event: KinesisStreamEvent): Promise<void> {
-  // Sequential on purpose: preserves per-aggregate ordering within the batch.
+  // Each notification triggers a full rebuild, so one rebuild per aggregate
+  // per batch is enough. Order of first appearance is kept.
+  const aggregateIds = new Set<string>();
   for (const record of event.Records) {
     const domainEvent = decode(record);
-    if (!domainEvent) continue;
-    await applyToProjection(domainEvent);
+    if (domainEvent) aggregateIds.add(domainEvent.aggregateId);
+  }
+  for (const aggregateId of aggregateIds) {
+    await rebuildProjection(aggregateId);
   }
 }
 
@@ -46,22 +57,46 @@ function decode(record: KinesisStreamRecord): DomainEvent | null {
   }
 }
 
-async function applyToProjection(ev: DomainEvent): Promise<void> {
-  console.log(`Processing event: ${ev.eventType} v${ev.version} for aggregate: ${ev.aggregateId}`);
-
+async function rebuildProjection(aggregateId: string): Promise<void> {
   await withTransaction('writer', async (client) => {
     const existing = await client.query(
       'SELECT * FROM loans WHERE loan_id = $1 FOR UPDATE',
-      [ev.aggregateId]
+      [aggregateId]
     );
     const current = existing.rows[0] ? fromDbRow(existing.rows[0]) : null;
-    const next = projectEvent(current, ev);
+
+    const events = await loadEvents(client, aggregateId);
+    const next = projectAll(events);
     if (!next) {
-      console.log(`No projection change for ${ev.aggregateId} v${ev.version}`);
+      console.log(`No projectable history for ${aggregateId} (${events.length} events)`);
       return;
     }
+    if (current && next.last_version <= current.last_version) {
+      console.log(`Projection for ${aggregateId} already at v${current.last_version}`);
+      return;
+    }
+    console.log(
+      `Projecting ${aggregateId}: v${current?.last_version ?? 0} -> v${next.last_version} (${next.status})`
+    );
     await upsert(client, next);
   });
+}
+
+async function loadEvents(client: PoolClient, aggregateId: string): Promise<DomainEvent[]> {
+  const result = await client.query(
+    `SELECT aggregate_id, version, event_type, occurred_at, payload
+       FROM events
+      WHERE aggregate_id = $1
+      ORDER BY version`,
+    [aggregateId]
+  );
+  return result.rows.map((r) => ({
+    aggregateId: r.aggregate_id as string,
+    version: Number(r.version),
+    eventType: r.event_type as string,
+    timestamp: (r.occurred_at as Date).toISOString(),
+    payload: r.payload as Record<string, unknown>,
+  }));
 }
 
 async function upsert(client: PoolClient, row: LoanRow): Promise<void> {

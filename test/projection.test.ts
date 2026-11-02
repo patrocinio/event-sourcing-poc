@@ -2,6 +2,7 @@ import { createEvent, DomainEvent, EventTypes } from '../src/domain/events';
 import {
   LoanRow,
   fromDbRow,
+  projectAll,
   projectEvent,
   toLoanView,
 } from '../src/shared/loan-projection';
@@ -125,6 +126,62 @@ describe('Loan projection (event -> loans row)', () => {
   it('is deterministic: replaying the full stream twice yields the same row', () => {
     const stream = [submitted, approved, disbursed];
     expect(apply([...stream, ...stream])).toEqual(apply(stream));
+  });
+});
+
+describe('projectAll (full history -> loans row, order-insensitive)', () => {
+  const full = [submitted, approved, disbursed];
+
+  it('returns null for an empty history', () => {
+    expect(projectAll([])).toBeNull();
+  });
+
+  it('folds an in-order history the same as sequential projectEvent', () => {
+    expect(projectAll(full)).toEqual(apply(full));
+    expect(projectAll(full)!.status).toBe('DISBURSED');
+    expect(projectAll(full)!.last_version).toBe(3);
+  });
+
+  it('produces the same row for every permutation of the history', () => {
+    const expected = apply(full);
+    const permutations = [
+      [submitted, approved, disbursed],
+      [submitted, disbursed, approved],
+      [approved, submitted, disbursed],
+      [approved, disbursed, submitted],
+      [disbursed, submitted, approved],
+      [disbursed, approved, submitted],
+    ];
+    for (const p of permutations) expect(projectAll(p)).toEqual(expected);
+  });
+
+  it('ignores duplicate deliveries of the same version', () => {
+    const withDupes = [disbursed, approved, submitted, approved, disbursed, submitted];
+    expect(projectAll(withDupes)).toEqual(apply(full));
+  });
+
+  it('keeps the first event for a duplicated version and ignores the conflicting one', () => {
+    const row = projectAll([submitted, approved, rejected])!; // two different v2s
+    expect(row.status).toBe('APPROVED');
+    expect(row.last_version).toBe(2);
+    expect(row.rejection_reason).toBeNull();
+  });
+
+  it('projects a partial history (gap-free prefix) up to the latest version', () => {
+    const row = projectAll([approved, submitted])!;
+    expect(row.status).toBe('APPROVED');
+    expect(row.last_version).toBe(2);
+  });
+
+  it('returns null when the submission event is missing', () => {
+    expect(projectAll([approved, disbursed])).toBeNull();
+  });
+
+  it('does not mutate its input', () => {
+    const input = [disbursed, submitted, approved];
+    const copy = [...input];
+    projectAll(input);
+    expect(input).toEqual(copy);
   });
 });
 
