@@ -1,19 +1,20 @@
 {
-  "name": "aws-native-loan-originations",
+  "name": "aurora-loan-originations",
   "version": "1.0.0",
-  "description": "CQRS/Event Sourcing Loan Originations using native AWS services",
+  "description": "CQRS/Event Sourcing Loan Originations on Aurora PostgreSQL Serverless v2 (aurora branch)",
   "scripts": {
     "build": "tsc",
     "test": "jest",
     "cdk": "cdk",
-    "synth": "cdk synth",
-    "deploy": "cdk deploy --all --require-approval never",
-    "destroy": "cdk destroy --all --force"
+    "synth": "cdk synth LoanOriginationsAurora",
+    "deploy": "cdk deploy LoanOriginationsAurora --require-approval never",
+    "destroy": "cdk destroy LoanOriginationsAurora --force"
   },
   "devDependencies": {
     "@types/aws-lambda": "^8.10.136",
     "@types/jest": "^29.5.12",
     "@types/node": "^20.11.0",
+    "@types/pg": "8.23.1",
     "@types/uuid": "^10.0.0",
     "aws-cdk": "^2.170.0",
     "aws-cdk-lib": "^2.170.0",
@@ -25,11 +26,9 @@
     "typescript": "^5.4.0"
   },
   "dependencies": {
-    "@aws-sdk/client-dynamodb": "^3.500.0",
     "@aws-sdk/client-kinesis": "^3.500.0",
-    "@aws-sdk/lib-dynamodb": "^3.500.0",
-    "@aws-sdk/util-dynamodb": "^3.500.0",
-    "ioredis": "^5.3.2",
+    "@aws-sdk/client-secrets-manager": "3.1075.0",
+    "pg": "8.23.1",
     "uuid": "^9.0.0"
   }
 }

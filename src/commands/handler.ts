@@ -3,29 +3,26 @@
  *
  * Flow:
  * 1. Parse command from API Gateway request
- * 2. Load events from DynamoDB (event store)
+ * 2. Load events from Aurora PostgreSQL (event store, writer endpoint)
  * 3. Replay events to get current aggregate state
  * 4. Validate command against state (business rules)
- * 5. If valid: persist new event (optimistic concurrency)
- * 6. Publish event to Kinesis for downstream consumers
+ * 5. If valid: INSERT new event; the (aggregate_id, version) primary key gives
+ *    optimistic concurrency — a racing writer gets 23505 -> HTTP 409
+ * 6. After commit, publish event to Kinesis (drives the projector)
  */
 
 import { APIGatewayProxyEvent, APIGatewayProxyResult } from 'aws-lambda';
-import { DynamoDBClient } from '@aws-sdk/client-dynamodb';
-import {
-  DynamoDBDocumentClient,
-  QueryCommand,
-  PutCommand,
-} from '@aws-sdk/lib-dynamodb';
 import { KinesisClient, PutRecordCommand } from '@aws-sdk/client-kinesis';
 import { v4 as uuidv4 } from 'uuid';
 import { DomainEvent, EventTypes, createEvent } from '../domain/events';
 import { rehydrate, validateCommand } from '../domain/aggregate';
+import { getPool, isUniqueViolation } from '../shared/db';
 
-const dynamodb = DynamoDBDocumentClient.from(new DynamoDBClient({}));
 const kinesis = new KinesisClient({});
 
-const TABLE_NAME = process.env.EVENT_TABLE_NAME!;
+/** Thrown when another writer already appended this (aggregate_id, version). */
+class ConcurrencyError extends Error {}
+
 const STREAM_NAME = process.env.KINESIS_STREAM_NAME!;
 
 export async function handler(
@@ -44,7 +41,8 @@ export async function handler(
 
     // POST /api/loans — Submit new loan
     if (pathParts.length === 2 && pathParts[1] === 'loans') {
-      return handleSubmitLoan(body);
+      // `return await` so rejections (e.g. ConcurrencyError) reach the catch below.
+      return await handleSubmitLoan(body);
     }
 
     // POST /api/loans/{id}/approve
@@ -53,11 +51,14 @@ export async function handler(
     if (pathParts.length === 4 && pathParts[1] === 'loans') {
       const loanId = pathParts[2];
       const action = pathParts[3];
-      return handleLoanAction(loanId, action, body);
+      return await handleLoanAction(loanId, action, body);
     }
 
     return response(404, { error: 'Not found' });
   } catch (err) {
+    if (err instanceof ConcurrencyError) {
+      return response(409, { error: 'Concurrent modification, retry' });
+    }
     console.error('Command handler error:', err);
     return response(500, { error: 'Internal server error' });
   }
@@ -166,7 +167,7 @@ async function handleLoanAction(
       return response(404, { error: `Unknown action: ${action}` });
   }
 
-  // Persist with optimistic concurrency (condition: version doesn't exist yet)
+  // Persist with optimistic concurrency (PK (aggregate_id, version) must not exist yet)
   await persistEvent(domainEvent);
   await publishToKinesis(domainEvent);
 
@@ -180,28 +181,43 @@ async function handleLoanAction(
 }
 
 async function loadEvents(aggregateId: string): Promise<DomainEvent[]> {
-  const result = await dynamodb.send(
-    new QueryCommand({
-      TableName: TABLE_NAME,
-      KeyConditionExpression: 'aggregateId = :id',
-      ExpressionAttributeValues: { ':id': aggregateId },
-      ScanIndexForward: true, // oldest first
-    })
+  // Read from the WRITER: command validation needs read-your-writes consistency.
+  const pool = await getPool('writer');
+  const result = await pool.query(
+    `SELECT aggregate_id, version, event_type, occurred_at, payload
+       FROM events
+      WHERE aggregate_id = $1
+      ORDER BY version`,
+    [aggregateId]
   );
-
-  return (result.Items || []) as DomainEvent[];
+  return result.rows.map((r) => ({
+    aggregateId: r.aggregate_id as string,
+    version: Number(r.version),
+    eventType: r.event_type as string,
+    timestamp: (r.occurred_at as Date).toISOString(),
+    payload: r.payload as Record<string, unknown>,
+  }));
 }
-
 async function persistEvent(domainEvent: DomainEvent): Promise<void> {
-  await dynamodb.send(
-    new PutCommand({
-      TableName: TABLE_NAME,
-      Item: domainEvent,
-      ConditionExpression: 'attribute_not_exists(aggregateId) AND attribute_not_exists(version)',
-    })
-  );
+  const pool = await getPool('writer');
+  try {
+    // Single-statement autocommit: the event is durable when this resolves.
+    await pool.query(
+      `INSERT INTO events (aggregate_id, version, event_type, occurred_at, payload)
+       VALUES ($1, $2, $3, $4, $5::jsonb)`,
+      [
+        domainEvent.aggregateId,
+        domainEvent.version,
+        domainEvent.eventType,
+        domainEvent.timestamp,
+        JSON.stringify(domainEvent.payload),
+      ]
+    );
+  } catch (err) {
+    if (isUniqueViolation(err)) throw new ConcurrencyError();
+    throw err;
+  }
 }
-
 async function publishToKinesis(domainEvent: DomainEvent): Promise<void> {
   await kinesis.send(
     new PutRecordCommand({

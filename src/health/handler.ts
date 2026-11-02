@@ -1,40 +1,31 @@
 /**
- * Health Check Lambda — verifies Redis connectivity.
+ * Health Check Lambda — verifies connectivity to the Aurora reader endpoint
+ * (the dependency the query side relies on).
  */
-
 import { APIGatewayProxyEvent, APIGatewayProxyResult } from 'aws-lambda';
-import Redis from 'ioredis';
+import { getPool } from '../shared/db';
 
 export async function handler(
   _event: APIGatewayProxyEvent
 ): Promise<APIGatewayProxyResult> {
-  let redisStatus = 'DOWN';
-
+  let dbStatus = 'DOWN';
   try {
-    const redis = new Redis({
-      host: process.env.REDIS_HOST!,
-      port: parseInt(process.env.REDIS_PORT || '6379'),
-      tls: process.env.REDIS_TLS === 'true' ? {} : undefined,
-      connectTimeout: 3000,
-      maxRetriesPerRequest: 1,
-    });
-
-    const pong = await redis.ping();
-    redisStatus = pong === 'PONG' ? 'UP' : 'DOWN';
-    await redis.quit();
-  } catch {
-    redisStatus = 'DOWN';
+    const pool = await getPool('reader');
+    const result = await pool.query('SELECT 1 AS ok');
+    dbStatus = result.rows[0]?.ok === 1 ? 'UP' : 'DOWN';
+  } catch (err) {
+    console.error('Health check failed:', err);
+    dbStatus = 'DOWN';
   }
 
-  const status = redisStatus === 'UP' ? 'UP' : 'DOWN';
-
+  const status = dbStatus === 'UP' ? 'UP' : 'DOWN';
   return {
     statusCode: status === 'UP' ? 200 : 503,
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
       status,
       components: {
-        redis: { status: redisStatus },
+        database: { status: dbStatus },
       },
     }),
   };

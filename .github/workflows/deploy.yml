@@ -1,10 +1,10 @@
-name: Deploy AWS-Native Loan Originations
+name: Deploy Aurora Loan Originations
 
 on:
   push:
-    branches: [aws-native]
+    branches: [aurora]
   pull_request:
-    branches: [aws-native]
+    branches: [aurora]
 
 permissions:
   id-token: write
@@ -15,35 +15,29 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-
       - uses: actions/setup-node@v4
         with:
           node-version: '20'
           cache: 'npm'
-
       - run: npm ci
       - run: npm run build
       - run: npm test
 
   deploy:
     needs: build-and-test
-    if: github.event_name == 'push' && github.ref == 'refs/heads/aws-native'
+    if: github.event_name == 'push' && github.ref == 'refs/heads/aurora'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-
       - uses: actions/setup-node@v4
         with:
           node-version: '20'
           cache: 'npm'
-
       - run: npm ci
-
       - name: Configure AWS credentials
         uses: aws-actions/configure-aws-credentials@v4
         with:
           role-to-assume: ${{ secrets.AWS_DEPLOY_ROLE_ARN }}
           aws-region: us-east-1
-
       - name: CDK Deploy
-        run: npx cdk deploy --all --require-approval never
+        run: npx cdk deploy LoanOriginationsAurora --require-approval never

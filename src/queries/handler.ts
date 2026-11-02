@@ -1,27 +1,21 @@
 /**
  * Query Handler Lambda — Read side of CQRS.
  *
- * Reads from the Redis projection (read model), NOT from the event store.
- * This demonstrates the key CQRS principle: reads and writes are separate.
+ * Reads the `loans` projection through the Aurora READER endpoint only,
+ * never the event store. Reads are eventually consistent: the projector
+ * (Kinesis-driven) plus reader replica lag sit between a command and its view.
  */
-
 import { APIGatewayProxyEvent, APIGatewayProxyResult } from 'aws-lambda';
-import Redis from 'ioredis';
+import { getPool } from '../shared/db';
+import { fromDbRow, toLoanView } from '../shared/loan-projection';
 
-let redis: Redis;
+const LIST_LIMIT = 50; // same as the Redis implementation (latest 50)
+const STATUS_LIMIT = 1000; // Redis returned the whole status set; cap it here
+const VALID_STATUSES = ['SUBMITTED', 'APPROVED', 'REJECTED', 'DISBURSED'];
 
-function getRedis(): Redis {
-  if (!redis) {
-    redis = new Redis({
-      host: process.env.REDIS_HOST!,
-      port: parseInt(process.env.REDIS_PORT || '6379'),
-      tls: process.env.REDIS_TLS === 'true' ? {} : undefined,
-      connectTimeout: 5000,
-      maxRetriesPerRequest: 3,
-    });
-  }
-  return redis;
-}
+const COLUMNS = `loan_id, applicant_name, requested_amount, purpose, status,
+  approved_amount, approved_by, approved_at, rejection_reason, rejected_by,
+  disbursement_account, disbursed_at, created_at, updated_at, last_version`;
 
 export async function handler(
   event: APIGatewayProxyEvent
@@ -32,19 +26,19 @@ export async function handler(
 
     // GET /api/loans
     if (pathParts.length === 2 && pathParts[1] === 'loans') {
-      return handleGetAllLoans();
+      return await handleGetAllLoans();
     }
 
     // GET /api/loans/status/{status}
     if (pathParts.length === 4 && pathParts[2] === 'status') {
       const status = pathParts[3].toUpperCase();
-      return handleGetLoansByStatus(status);
+      return await handleGetLoansByStatus(status);
     }
 
     // GET /api/loans/{id}
     if (pathParts.length === 3 && pathParts[1] === 'loans') {
       const loanId = pathParts[2];
-      return handleGetLoanById(loanId);
+      return await handleGetLoanById(loanId);
     }
 
     return response(404, { error: 'Not found' });
@@ -55,65 +49,33 @@ export async function handler(
 }
 
 async function handleGetAllLoans(): Promise<APIGatewayProxyResult> {
-  const client = getRedis();
-
-  // Get latest 50 loan IDs from sorted set (newest first)
-  const loanIds = await client.zrevrange('loans:all', 0, 49);
-
-  if (loanIds.length === 0) {
-    return response(200, []);
-  }
-
-  // Batch fetch all loan data
-  const pipeline = client.pipeline();
-  for (const id of loanIds) {
-    pipeline.get(`loan:${id}`);
-  }
-  const results = await pipeline.exec();
-
-  const loans = (results || [])
-    .map(([err, data]) => (err ? null : data ? JSON.parse(data as string) : null))
-    .filter(Boolean);
-
-  return response(200, loans);
+  const pool = await getPool('reader');
+  const result = await pool.query(
+    `SELECT ${COLUMNS} FROM loans ORDER BY created_at DESC LIMIT $1`,
+    [LIST_LIMIT]
+  );
+  return response(200, result.rows.map((r) => toLoanView(fromDbRow(r))));
 }
 
 async function handleGetLoanById(loanId: string): Promise<APIGatewayProxyResult> {
-  const client = getRedis();
-  const data = await client.get(`loan:${loanId}`);
-
-  if (!data) {
+  const pool = await getPool('reader');
+  const result = await pool.query(`SELECT ${COLUMNS} FROM loans WHERE loan_id = $1`, [loanId]);
+  if (result.rows.length === 0) {
     return response(404, { error: 'Loan not found' });
   }
-
-  return response(200, JSON.parse(data));
+  return response(200, toLoanView(fromDbRow(result.rows[0])));
 }
 
 async function handleGetLoansByStatus(status: string): Promise<APIGatewayProxyResult> {
-  const validStatuses = ['SUBMITTED', 'APPROVED', 'REJECTED', 'DISBURSED'];
-  if (!validStatuses.includes(status)) {
-    return response(400, { error: `Invalid status. Must be one of: ${validStatuses.join(', ')}` });
+  if (!VALID_STATUSES.includes(status)) {
+    return response(400, { error: `Invalid status. Must be one of: ${VALID_STATUSES.join(', ')}` });
   }
-
-  const client = getRedis();
-  const loanIds = await client.smembers(`loans:status:${status}`);
-
-  if (loanIds.length === 0) {
-    return response(200, []);
-  }
-
-  const pipeline = client.pipeline();
-  for (const id of loanIds) {
-    pipeline.get(`loan:${id}`);
-  }
-  const results = await pipeline.exec();
-
-  const loans = (results || [])
-    .map(([err, data]) => (err ? null : data ? JSON.parse(data as string) : null))
-    .filter(Boolean)
-    .sort((a, b) => new Date(b.submittedAt).getTime() - new Date(a.submittedAt).getTime());
-
-  return response(200, loans);
+  const pool = await getPool('reader');
+  const result = await pool.query(
+    `SELECT ${COLUMNS} FROM loans WHERE status = $1 ORDER BY created_at DESC LIMIT $2`,
+    [status, STATUS_LIMIT]
+  );
+  return response(200, result.rows.map((r) => toLoanView(fromDbRow(r))));
 }
 
 function response(statusCode: number, body: unknown): APIGatewayProxyResult {

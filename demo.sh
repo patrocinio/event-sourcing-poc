@@ -1,41 +1,50 @@
 #!/bin/bash
 ###############################################################################
-# AWS-Native CQRS/Event Sourcing — Live Demo Script (Multi-Region)
+# Aurora CQRS/Event Sourcing — Live Demo Script (single region, us-east-1)
 #
-# This demonstrates CQRS/Event Sourcing with native AWS services in an
-# active-active multi-region deployment (us-east-1 + us-west-2):
-#   - API Gateway (REST API) per region
+# This demonstrates CQRS/Event Sourcing on AWS with:
+#   - API Gateway (REST API, IAM/SigV4 auth) + WAF
 #   - Lambda (TypeScript) for compute
-#   - DynamoDB Global Tables (event store with cross-region replication)
-#   - Kinesis Data Streams (event distribution)
-#   - ElastiCache Redis Multi-AZ (read model / projection)
+#   - Aurora PostgreSQL Serverless v2
+#       writer instance  = event store (`events`) + projection writes
+#       reader instance  = query side (`loans` projection)
+#   - Kinesis Data Streams (event distribution; drives the projector)
+#
+# Every API call is signed with SigV4 using your current AWS credentials
+# (curl --aws-sigv4, curl >= 7.75). The caller needs execute-api:Invoke on the API.
 #
 # Usage:
 #   ./demo.sh
-#   (auto-discovers endpoints from CloudFormation stacks)
+#   (auto-discovers the endpoint from the LoanOriginationsAurora stack;
+#    override with API_URL=...)
 ###############################################################################
-
 # Don't exit on errors — this is an interactive demo script
 
-# Auto-discover regional endpoints
-PRIMARY="${PRIMARY_URL:-$(aws cloudformation describe-stacks --stack-name LoanOriginationsPrimary --region us-east-1 --query 'Stacks[0].Outputs[?OutputKey==`ApiUrl`].OutputValue' --output text 2>/dev/null || echo "")}"
-SECONDARY="${SECONDARY_URL:-$(aws cloudformation describe-stacks --stack-name LoanOriginationsSecondary --region us-west-2 --query 'Stacks[0].Outputs[?OutputKey==`ApiUrl`].OutputValue' --output text 2>/dev/null || echo "")}"
+REGION="us-east-1"
+STACK_NAME="LoanOriginationsAurora"
 
-PRIMARY="${PRIMARY%/}"
-SECONDARY="${SECONDARY%/}"
+BASE="${API_URL:-$(aws cloudformation describe-stacks --stack-name "$STACK_NAME" --region "$REGION" --query 'Stacks[0].Outputs[?OutputKey==`ApiUrl`].OutputValue' --output text 2>/dev/null || echo "")}"
+BASE="${BASE%/}"
 
-if [ -z "$PRIMARY" ] || [ "$PRIMARY" = "None" ]; then
-  echo "  ERROR: Could not determine Primary API URL (us-east-1)."
-  echo "  Set PRIMARY_URL env var or deploy LoanOriginationsPrimary stack."
+if [ -z "$BASE" ] || [ "$BASE" = "None" ]; then
+  echo "  ERROR: Could not determine API URL ($REGION)."
+  echo "  Set API_URL env var or deploy the $STACK_NAME stack."
   exit 1
 fi
-if [ -z "$SECONDARY" ] || [ "$SECONDARY" = "None" ]; then
-  echo "  WARNING: Secondary region (us-west-2) not available. Cross-region tests will be skipped."
-  SECONDARY=""
-fi
 
-# Use PRIMARY as default BASE for single-region parts
-BASE="$PRIMARY"
+# Load the caller's credentials (profile, SSO, env, or instance role) as env vars.
+if ! CREDS_ENV="$(aws configure export-credentials --format env 2>/dev/null)"; then
+  echo "  ERROR: Could not export AWS credentials (aws configure export-credentials)."
+  echo "  Log in / select a profile first (e.g. export AWS_PROFILE=...)."
+  exit 1
+fi
+eval "$CREDS_ENV"
+unset CREDS_ENV
+
+if [ -z "${AWS_ACCESS_KEY_ID:-}" ] || [ -z "${AWS_SECRET_ACCESS_KEY:-}" ]; then
+  echo "  ERROR: AWS credentials are incomplete."
+  exit 1
+fi
 
 BOLD=$'\033[1m'
 GREEN=$'\033[1;32m'
@@ -43,6 +52,21 @@ CYAN=$'\033[1;36m'
 YELLOW=$'\033[1;33m'
 RED=$'\033[1;31m'
 RESET=$'\033[0m'
+
+# Signed API call: api METHOD PATH [JSON_BODY]
+api() {
+  local method="$1" path="$2" body="${3:-}"
+  local args=(-s -X "$method"
+    --aws-sigv4 "aws:amz:${REGION}:execute-api"
+    --user "${AWS_ACCESS_KEY_ID}:${AWS_SECRET_ACCESS_KEY}")
+  if [ -n "${AWS_SESSION_TOKEN:-}" ]; then
+    args+=(-H "x-amz-security-token: ${AWS_SESSION_TOKEN}")
+  fi
+  if [ -n "$body" ]; then
+    args+=(-H "Content-Type: application/json" -d "$body")
+  fi
+  curl "${args[@]}" "${BASE}${path}"
+}
 
 pause() {
   echo ""
@@ -65,39 +89,66 @@ explain() {
   printf "%b\n" "  ${YELLOW}ℹ${RESET} $1"
 }
 
+# Projector is asynchronous (Kinesis → Lambda → Aurora writer → reader replica).
+wait_for_projection() {
+  sleep "${1:-3}"
+}
+
 ###############################################################################
-header "AWS-NATIVE CQRS & EVENT SOURCING DEMO"
+header "AURORA CQRS & EVENT SOURCING DEMO"
 ###############################################################################
 
 echo ""
 echo "  This demo showcases a Loan Originations system built with:"
 echo ""
-echo "    • API Gateway     — REST API endpoints (per region)"
-echo "    • Lambda          — Command & Query handlers (TypeScript)"
-echo "    • DynamoDB        — Global Tables Event Store (multi-region)"
-echo "    • Kinesis Streams — Event distribution"
-echo "    • ElastiCache     — Redis Multi-AZ read model (per region)"
+echo "    • API Gateway     — REST API endpoints (IAM / SigV4 auth)"
+echo "    • Lambda          — Command, Query & Projector handlers (TypeScript)"
+echo "    • Aurora writer   — PostgreSQL event store (events table)"
+echo "    • Kinesis Streams — Event distribution → Projector"
+echo "    • Aurora reader   — Query side (loans projection table)"
 echo ""
-echo "  Multi-Region Active-Active Architecture:"
+echo "  Single-Region Architecture (us-east-1, 3 AZs):"
 echo ""
-echo "                    Route53 (Latency-Based Routing)"
+echo "    Client (SigV4) ──▶ API Gateway + WAF"
 echo "                         │"
-echo "            ┌────────────┼────────────┐"
+echo "            ┌────────────┴────────────┐"
 echo "            ▼                         ▼"
 echo "    ┌──────────────┐          ┌──────────────┐"
-echo "    │  us-east-1   │          │  us-west-2   │"
-echo "    │  API Gateway │          │  API Gateway │"
-echo "    │  Lambda      │          │  Lambda      │"
-echo "    │  Redis (3AZ) │          │  Redis (3AZ) │"
-echo "    └──────┬───────┘          └──────┬───────┘"
-echo "           │                         │"
-echo "           └──── DynamoDB Global ────┘"
-echo "                  Tables (sync)"
+echo "    │ Command λ    │          │  Query λ     │"
+echo "    └──────┬───────┘          └──────▲───────┘"
+echo "           │ INSERT event            │ SELECT loans"
+echo "           ▼                         │"
+echo "    ┌──────────────┐  replicate ┌──────────────┐"
+echo "    │Aurora WRITER │───────────▶│Aurora READER │"
+echo "    │ events,loans │            │   (loans)    │"
+echo "    └──────┬───────┘            └──────────────┘"
+echo "           │ publish                 ▲"
+echo "           ▼                         │"
+echo "      Kinesis ──▶ Projector λ ── upsert loans on WRITER"
 echo ""
-printf "%b\n" "  ${BOLD}Primary (us-east-1):${RESET}   ${PRIMARY}"
-if [ -n "$SECONDARY" ]; then
-printf "%b\n" "  ${BOLD}Secondary (us-west-2):${RESET}  ${SECONDARY}"
+printf "%b\n" "  ${BOLD}API (us-east-1):${RESET}  ${BASE}"
+
+pause
+
+###############################################################################
+header "PART 0: SECURITY — The API requires IAM (SigV4) authentication"
+###############################################################################
+
+step "Sending an UNSIGNED request..."
+echo ""
+ANON_CODE=$(curl -s -o /dev/null -w "%{http_code}" "${BASE}/api/loans")
+if [ "$ANON_CODE" = "403" ]; then
+  printf "%b\n" "  ${GREEN}HTTP ${ANON_CODE}${RESET} — unsigned callers are rejected by API Gateway."
+else
+  printf "%b\n" "  ${RED}HTTP ${ANON_CODE}${RESET} — expected 403. Check the API's authorization settings!"
 fi
+echo ""
+step "Sending a SIGNED request (health check)..."
+echo ""
+api GET "/api/loans/health" | jq '.' 2>/dev/null
+echo ""
+explain "Every call below is signed with your AWS credentials (curl --aws-sigv4)."
+explain "The health check runs SELECT 1 against the Aurora READER endpoint."
 
 pause
 
@@ -106,18 +157,16 @@ header "PART 1: COMMAND SIDE — Submit Loan Application"
 ###############################################################################
 
 explain "Commands go to the Command Lambda, which:"
-explain "  1. Replays events from DynamoDB to rebuild aggregate state"
+explain "  1. Replays events from the Aurora writer (events table) to rebuild state"
 explain "  2. Validates business rules"
-explain "  3. Persists new event to DynamoDB (optimistic concurrency)"
-explain "  4. Publishes event to Kinesis for downstream consumers"
+explain "  3. INSERTs the new event — PK (aggregate_id, version) = optimistic concurrency"
+explain "  4. Publishes the event to Kinesis after the commit"
 echo ""
+
 step "Sending SubmitLoan command..."
 echo ""
-
-RESULT=$(curl -s -X POST "${BASE}/api/loans" \
-  -H "Content-Type: application/json" \
-  -d '{"applicantName":"Maria Garcia","requestedAmount":120000,"purpose":"Home Purchase"}')
-
+RESULT=$(api POST "/api/loans" \
+  '{"applicantName":"Maria Garcia","requestedAmount":120000,"purpose":"Home Purchase"}')
 echo "  Response:"
 echo "  $RESULT" | jq '.' 2>/dev/null || echo "  $RESULT"
 
@@ -125,11 +174,11 @@ LOAN_ID=$(echo "$RESULT" | jq -r '.loanId' 2>/dev/null)
 
 echo ""
 explain "Behind the scenes:"
-explain "  1. API Gateway → Command Lambda"
-explain "  2. Lambda wrote LoanApplicationSubmittedEvent to DynamoDB"
-explain "  3. DynamoDB Streams triggered Projector Lambda"
-explain "  4. Projector updated Redis read model"
-explain "  5. Event also published to Kinesis (for other consumers)"
+explain "  1. API Gateway (IAM auth) → Command Lambda"
+explain "  2. Lambda wrote LoanApplicationSubmitted to the events table (Aurora writer)"
+explain "  3. Lambda published the event to Kinesis"
+explain "  4. Kinesis triggered the Projector Lambda"
+explain "  5. Projector upserted the loans row on the writer (guarded by last_version)"
 
 pause
 
@@ -137,17 +186,19 @@ pause
 header "PART 2: QUERY SIDE — Read from Projection"
 ###############################################################################
 
-explain "Queries go to the Query Lambda, which reads from Redis (NOT DynamoDB)."
-explain "This is CQRS: write path and read path are completely separate."
+explain "Queries go to the Query Lambda, which reads the loans table"
+explain "through the Aurora READER endpoint — never the event store."
+explain "This is CQRS: write path and read path are separate."
 echo ""
+
 step "Querying loan by ID..."
 echo ""
-
-curl -s "${BASE}/api/loans/${LOAN_ID}" | jq '.' 2>/dev/null
+wait_for_projection 3
+api GET "/api/loans/${LOAN_ID}" | jq '.' 2>/dev/null
 
 echo ""
-explain "The Query Lambda never touches the Event Store (DynamoDB)."
-explain "It reads from Redis — the pre-computed read model."
+explain "The Query Lambda never touches the events table."
+explain "It reads the pre-computed loans projection from the reader instance."
 
 pause
 
@@ -157,12 +208,11 @@ header "PART 3: BUSINESS RULES — State Machine Enforcement"
 
 explain "The Command Lambda enforces invariants by replaying events first."
 echo ""
+
 step "Attempting invalid transition: disburse a SUBMITTED loan..."
 echo ""
-
-curl -s -X POST "${BASE}/api/loans/${LOAN_ID}/disburse" \
-  -H "Content-Type: application/json" \
-  -d '{"disbursementAccount":"ACCT-999"}' | jq '.' 2>/dev/null
+api POST "/api/loans/${LOAN_ID}/disburse" \
+  '{"disbursementAccount":"ACCT-999"}' | jq '.' 2>/dev/null
 
 echo ""
 explain "HTTP 409: 'Can only disburse an APPROVED loan'"
@@ -175,26 +225,24 @@ header "PART 4: FULL LIFECYCLE — Submit → Approve → Disburse"
 ###############################################################################
 
 step "Approving..."
-curl -s -X POST "${BASE}/api/loans/${LOAN_ID}/approve" \
-  -H "Content-Type: application/json" \
-  -d '{"approvedAmount":115000,"approvedBy":"Sarah Chen (VP Lending)"}' | jq '.' 2>/dev/null
+api POST "/api/loans/${LOAN_ID}/approve" \
+  '{"approvedAmount":115000,"approvedBy":"Sarah Chen (VP Lending)"}' | jq '.' 2>/dev/null
 echo ""
 
 step "Disbursing..."
-curl -s -X POST "${BASE}/api/loans/${LOAN_ID}/disburse" \
-  -H "Content-Type: application/json" \
-  -d '{"disbursementAccount":"ACH-0012345678"}' | jq '.' 2>/dev/null
+api POST "/api/loans/${LOAN_ID}/disburse" \
+  '{"disbursementAccount":"ACH-0012345678"}' | jq '.' 2>/dev/null
 echo ""
 
-step "Final state from projection:"
-sleep 2  # Allow projector Lambda to update Redis
-curl -s "${BASE}/api/loans/${LOAN_ID}" | jq '.' 2>/dev/null
+step "Final state from projection (Aurora reader):"
+wait_for_projection 3
+api GET "/api/loans/${LOAN_ID}" | jq '.' 2>/dev/null
 
 echo ""
-explain "DynamoDB now has 3 events for this aggregate:"
-explain "  v1: LoanApplicationSubmittedEvent"
-explain "  v2: LoanApprovedEvent"
-explain "  v3: LoanDisbursedEvent"
+explain "The Aurora events table now has 3 rows for this aggregate:"
+explain "  v1: LoanApplicationSubmitted"
+explain "  v2: LoanApproved"
+explain "  v3: LoanDisbursed"
 
 pause
 
@@ -204,20 +252,17 @@ header "PART 5: EVENT SOURCING — Different Paths Coexist"
 
 step "Submitting a second loan and rejecting it..."
 echo ""
-
-RESULT2=$(curl -s -X POST "${BASE}/api/loans" \
-  -H "Content-Type: application/json" \
-  -d '{"applicantName":"James Wilson","requestedAmount":500000,"purpose":"Speculative Investment"}')
-
+RESULT2=$(api POST "/api/loans" \
+  '{"applicantName":"James Wilson","requestedAmount":500000,"purpose":"Speculative Investment"}')
 LOAN_ID2=$(echo "$RESULT2" | jq -r '.loanId' 2>/dev/null)
 
-curl -s -X POST "${BASE}/api/loans/${LOAN_ID2}/reject" \
-  -H "Content-Type: application/json" \
-  -d '{"reason":"Amount exceeds risk threshold","rejectedBy":"Risk Engine (automated)"}' | jq '.' 2>/dev/null
+api POST "/api/loans/${LOAN_ID2}/reject" \
+  '{"reason":"Amount exceeds risk threshold","rejectedBy":"Risk Engine (automated)"}' | jq '.' 2>/dev/null
 
 echo ""
-explain "Both paths stored in DynamoDB event store permanently."
+explain "Both paths are stored permanently in the Aurora events table."
 explain "SUBMITTED→APPROVED→DISBURSED and SUBMITTED→REJECTED coexist."
+explain "The loans projection can be rebuilt at any time by replaying events."
 
 pause
 
@@ -225,98 +270,29 @@ pause
 header "PART 6: QUERY BY STATUS"
 ###############################################################################
 
+wait_for_projection 3
 step "All loans:"
-curl -s "${BASE}/api/loans" | jq '.' 2>/dev/null
+api GET "/api/loans" | jq '.' 2>/dev/null
 echo ""
 
 step "DISBURSED only:"
-curl -s "${BASE}/api/loans/status/DISBURSED" | jq '.' 2>/dev/null
+api GET "/api/loans/status/DISBURSED" | jq '.' 2>/dev/null
 echo ""
 
 step "REJECTED only:"
-curl -s "${BASE}/api/loans/status/REJECTED" | jq '.' 2>/dev/null
+api GET "/api/loans/status/REJECTED" | jq '.' 2>/dev/null
 
 pause
 
 ###############################################################################
-header "PART 7: CROSS-REGION ACTIVE-ACTIVE — DynamoDB Global Tables"
+header "PART 7: SINGLE REGION — Why no cross-region active-active here"
 ###############################################################################
 
-if [ -z "$SECONDARY" ]; then
-  explain "Secondary region not deployed. Skipping cross-region test."
-else
-  explain "This is the key production-readiness feature: ACTIVE-ACTIVE multi-region."
-  explain "Both us-east-1 and us-west-2 can serve reads AND writes simultaneously."
-  explain "DynamoDB Global Tables replicate events bi-directionally (<1s latency)."
-  echo ""
-  printf "%b\n" "  ${BOLD}Primary (us-east-1):${RESET}   ${PRIMARY}"
-  printf "%b\n" "  ${BOLD}Secondary (us-west-2):${RESET}  ${SECONDARY}"
-  echo ""
-
-  step "Step 1: Submit a loan on PRIMARY (us-east-1)..."
-  echo ""
-  CROSS_RESULT=$(curl -s -X POST "${PRIMARY}/api/loans" \
-    -H "Content-Type: application/json" \
-    -d '{"applicantName":"Cross-Region Test","requestedAmount":200000,"purpose":"Multi-Region Active-Active Demo"}')
-  echo "  $CROSS_RESULT" | jq '.' 2>/dev/null
-  CROSS_LOAN_ID=$(echo "$CROSS_RESULT" | jq -r '.loanId' 2>/dev/null)
-
-  pause
-
-  step "Step 2: Approve the loan on SECONDARY (us-west-2)..."
-  explain "(Events replicated via DynamoDB Global Tables in <1 second)"
-  echo ""
-  sleep 3  # Allow replication
-  APPROVE_RESULT=$(curl -s -X POST "${SECONDARY}/api/loans/${CROSS_LOAN_ID}/approve" \
-    -H "Content-Type: application/json" \
-    -d '{"approvedAmount":195000,"approvedBy":"West Coast Manager"}')
-  echo "  $APPROVE_RESULT" | jq '.' 2>/dev/null
-
-  echo ""
-  explain "The Secondary region's Command Lambda:"
-  explain "  1. Queried DynamoDB (local us-west-2 replica) for this loan's events"
-  explain "  2. Found the LoanApplicationSubmittedEvent (replicated from us-east-1)"
-  explain "  3. Validated: status=SUBMITTED, approve is valid"
-  explain "  4. Wrote LoanApprovedEvent to DynamoDB (us-west-2 replica)"
-  explain "  5. That event replicates back to us-east-1 automatically"
-
-  pause
-
-  step "Step 3: Disburse on PRIMARY (us-east-1) — reading approval from us-west-2..."
-  echo ""
-  sleep 3  # Allow replication back
-  DISBURSE_RESULT=$(curl -s -X POST "${PRIMARY}/api/loans/${CROSS_LOAN_ID}/disburse" \
-    -H "Content-Type: application/json" \
-    -d '{"disbursementAccount":"ACH-CROSS-REGION-001"}')
-  echo "  $DISBURSE_RESULT" | jq '.' 2>/dev/null
-
-  echo ""
-  explain "Primary region saw the approval event (replicated from us-west-2)"
-  explain "and successfully processed the disbursement."
-
-  pause
-
-  step "Step 4: Verify final state from both regions..."
-  echo ""
-  sleep 3
-  printf "%b\n" "  ${BOLD}From PRIMARY (us-east-1):${RESET}"
-  curl -s "${PRIMARY}/api/loans/${CROSS_LOAN_ID}" | jq '.status, .approvedBy' 2>/dev/null
-  echo ""
-  printf "%b\n" "  ${BOLD}From SECONDARY (us-west-2):${RESET}"
-  curl -s "${SECONDARY}/api/loans/${CROSS_LOAN_ID}" | jq '.status, .approvedBy' 2>/dev/null
-
-  echo ""
-  explain "Both regions show DISBURSED — perfect consistency via Global Tables."
-  echo ""
-  echo "  Timeline of this loan across regions:"
-  echo "    ┌────────────────────────────────────────────────────────────┐"
-  echo "    │  us-east-1: Submit ──────────────────────── Disburse      │"
-  echo "    │               │                              ▲             │"
-  echo "    │               │   DynamoDB Global Tables     │             │"
-  echo "    │               ▼   (bi-directional sync)      │             │"
-  echo "    │  us-west-2:        ──────── Approve ─────────             │"
-  echo "    └────────────────────────────────────────────────────────────┘"
-fi
+explain "An Aurora cluster has exactly ONE writer. Aurora Global Database"
+explain "secondaries are read-only, so active-active writes (as on the"
+explain "aws-native branch with DynamoDB Global Tables) are not possible."
+explain "This branch runs in us-east-1 only, across 3 AZs (writer + reader"
+explain "instances in different AZs, automatic failover to the reader)."
 
 pause
 
@@ -325,23 +301,23 @@ header "PART 8: AWS SERVICES vs AXON FRAMEWORK — Comparison"
 ###############################################################################
 
 echo ""
-echo "  ┌─────────────────────┬─────────────────────┬─────────────────────┐"
-echo "  │ Concern             │ Axon Framework      │ AWS Native          │"
-echo "  ├─────────────────────┼─────────────────────┼─────────────────────┤"
-echo "  │ Event Store         │ Axon Server         │ DynamoDB            │"
-echo "  │ Event Routing       │ Axon Server         │ Kinesis Streams     │"
-echo "  │ Command Handling    │ @CommandHandler     │ Lambda function     │"
-echo "  │ Query Handling      │ @QueryHandler       │ Lambda function     │"
-echo "  │ Projections         │ @EventHandler       │ DynamoDB Streams    │"
-echo "  │ Read Model          │ In-memory HashMap   │ ElastiCache Redis   │"
-echo "  │ API                 │ Spring Boot         │ API Gateway         │"
-echo "  │ Deployment          │ EKS (containers)    │ Serverless (Lambda) │"
-echo "  │ Scaling             │ Manual (pods)       │ Automatic           │"
-echo "  │ Cost Model          │ Always-on           │ Pay-per-request     │"
-echo "  └─────────────────────┴─────────────────────┴─────────────────────┘"
+echo "  ┌─────────────────────┬─────────────────────┬─────────────────────────┐"
+echo "  │ Concern             │ Axon Framework      │ AWS (aurora branch)     │"
+echo "  ├─────────────────────┼─────────────────────┼─────────────────────────┤"
+echo "  │ Event Store         │ Axon Server         │ Aurora PG (writer)      │"
+echo "  │ Event Routing       │ Axon Server         │ Kinesis Streams         │"
+echo "  │ Command Handling    │ @CommandHandler     │ Lambda function         │"
+echo "  │ Query Handling      │ @QueryHandler       │ Lambda function         │"
+echo "  │ Projections         │ @EventHandler       │ Kinesis → Projector λ   │"
+echo "  │ Read Model          │ In-memory HashMap   │ Aurora PG (reader)      │"
+echo "  │ API                 │ Spring Boot         │ API Gateway (IAM auth)  │"
+echo "  │ Deployment          │ EKS (containers)    │ Serverless (Lambda)     │"
+echo "  │ Scaling             │ Manual (pods)       │ Automatic (ACUs)        │"
+echo "  │ Cost Model          │ Always-on           │ Per-ACU-hour + requests │"
+echo "  └─────────────────────┴─────────────────────┴─────────────────────────┘"
 echo ""
 explain "Same pattern (CQRS/ES), different implementation."
-explain "AWS-native approach: no servers, auto-scaling, pay-per-use."
+explain "Aurora approach: SQL event store + SQL read model, serverless compute."
 echo ""
 printf "%b\n" "  ${GREEN}Demo complete!${RESET}"
 echo ""

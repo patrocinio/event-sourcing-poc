@@ -1,160 +1,108 @@
 /**
- * Projector Lambda — Builds the read model from DynamoDB Streams.
+ * Projector Lambda — builds the `loans` read model from the Kinesis event stream.
  *
- * This is the bridge between the Event Store (write side) and Redis (read side).
- * It receives DynamoDB Stream events whenever a new event is written to the
- * event store, then updates the Redis read model accordingly.
+ * The command handler commits each event to the Aurora `events` table and then
+ * publishes it to Kinesis (partition key = aggregateId, so per-loan order is
+ * preserved within a shard). This Lambda consumes the stream and upserts the
+ * projection on the WRITER endpoint; the query side reads it from the reader.
  *
- * Key insight: This projection can be rebuilt at any time by replaying
- * all events from DynamoDB. The read model is disposable — events are the truth.
+ * Idempotency: Kinesis delivery is at-least-once. Each update is guarded by
+ * `last_version`, both in the pure mapping (projectEvent) and in the SQL
+ * upsert, so duplicates and stale replays are no-ops.
+ *
+ * The read model is disposable: it can be rebuilt at any time by replaying
+ * the `events` table through projectEvent.
  */
+import { KinesisStreamEvent, KinesisStreamRecord } from 'aws-lambda';
+import type { PoolClient } from 'pg';
+import { DomainEvent } from '../domain/events';
+import { withTransaction } from '../shared/db';
+import { LoanRow, fromDbRow, projectEvent } from '../shared/loan-projection';
 
-import { DynamoDBStreamEvent, DynamoDBRecord } from 'aws-lambda';
-import { unmarshall } from '@aws-sdk/util-dynamodb';
-import { AttributeValue } from '@aws-sdk/client-dynamodb';
-import Redis from 'ioredis';
-import { DomainEvent, EventTypes } from '../domain/events';
-
-let redis: Redis;
-
-function getRedis(): Redis {
-  if (!redis) {
-    redis = new Redis({
-      host: process.env.REDIS_HOST!,
-      port: parseInt(process.env.REDIS_PORT || '6379'),
-      tls: process.env.REDIS_TLS === 'true' ? {} : undefined,
-      connectTimeout: 5000,
-      maxRetriesPerRequest: 3,
-    });
-  }
-  return redis;
-}
-
-export async function handler(event: DynamoDBStreamEvent): Promise<void> {
-  const client = getRedis();
-
+export async function handler(event: KinesisStreamEvent): Promise<void> {
+  // Sequential on purpose: preserves per-aggregate ordering within the batch.
   for (const record of event.Records) {
-    if (record.eventName !== 'INSERT') continue;
-    await processRecord(client, record);
+    const domainEvent = decode(record);
+    if (!domainEvent) continue;
+    await applyToProjection(domainEvent);
   }
 }
 
-async function processRecord(client: Redis, record: DynamoDBRecord): Promise<void> {
-  if (!record.dynamodb?.NewImage) return;
-
-  const item = unmarshall(
-    record.dynamodb.NewImage as Record<string, AttributeValue>
-  ) as DomainEvent;
-
-  const { aggregateId, eventType, timestamp, payload } = item;
-
-  console.log(`Processing event: ${eventType} for aggregate: ${aggregateId}`);
-
-  switch (eventType) {
-    case EventTypes.LOAN_APPLICATION_SUBMITTED:
-      await handleSubmitted(client, aggregateId, timestamp, payload);
-      break;
-    case EventTypes.LOAN_APPROVED:
-      await handleApproved(client, aggregateId, timestamp, payload);
-      break;
-    case EventTypes.LOAN_REJECTED:
-      await handleRejected(client, aggregateId, payload);
-      break;
-    case EventTypes.LOAN_DISBURSED:
-      await handleDisbursed(client, aggregateId, timestamp, payload);
-      break;
-    default:
-      console.warn(`Unknown event type: ${eventType}`);
+function decode(record: KinesisStreamRecord): DomainEvent | null {
+  try {
+    const json = Buffer.from(record.kinesis.data, 'base64').toString('utf8');
+    const ev = JSON.parse(json) as DomainEvent;
+    if (!ev.aggregateId || typeof ev.version !== 'number' || !ev.eventType) {
+      throw new Error('missing aggregateId/version/eventType');
+    }
+    return ev;
+  } catch (err) {
+    // A malformed record can never succeed; skip it rather than block the shard.
+    console.error(
+      `Skipping malformed Kinesis record ${record.kinesis.sequenceNumber}:`,
+      err
+    );
+    return null;
   }
 }
 
-async function handleSubmitted(
-  client: Redis,
-  loanId: string,
-  timestamp: string,
-  payload: Record<string, unknown>
-): Promise<void> {
-  const loanView = {
-    loanId,
-    applicantName: payload.applicantName,
-    requestedAmount: payload.requestedAmount,
-    purpose: payload.purpose,
-    status: 'SUBMITTED',
-    submittedAt: timestamp,
-    approvedAmount: null,
-    approvedBy: null,
-    approvedAt: null,
-    rejectedReason: null,
-    rejectedBy: null,
-    disbursedAt: null,
-  };
+async function applyToProjection(ev: DomainEvent): Promise<void> {
+  console.log(`Processing event: ${ev.eventType} v${ev.version} for aggregate: ${ev.aggregateId}`);
 
-  const pipeline = client.pipeline();
-  pipeline.set(`loan:${loanId}`, JSON.stringify(loanView));
-  pipeline.zadd('loans:all', Date.parse(timestamp).toString(), loanId);
-  pipeline.sadd('loans:status:SUBMITTED', loanId);
-  await pipeline.exec();
+  await withTransaction('writer', async (client) => {
+    const existing = await client.query(
+      'SELECT * FROM loans WHERE loan_id = $1 FOR UPDATE',
+      [ev.aggregateId]
+    );
+    const current = existing.rows[0] ? fromDbRow(existing.rows[0]) : null;
+    const next = projectEvent(current, ev);
+    if (!next) {
+      console.log(`No projection change for ${ev.aggregateId} v${ev.version}`);
+      return;
+    }
+    await upsert(client, next);
+  });
 }
 
-async function handleApproved(
-  client: Redis,
-  loanId: string,
-  timestamp: string,
-  payload: Record<string, unknown>
-): Promise<void> {
-  const existing = await client.get(`loan:${loanId}`);
-  if (!existing) return;
-
-  const loan = JSON.parse(existing);
-  loan.status = 'APPROVED';
-  loan.approvedAmount = payload.approvedAmount;
-  loan.approvedBy = payload.approvedBy;
-  loan.approvedAt = timestamp;
-
-  const pipeline = client.pipeline();
-  pipeline.set(`loan:${loanId}`, JSON.stringify(loan));
-  pipeline.srem('loans:status:SUBMITTED', loanId);
-  pipeline.sadd('loans:status:APPROVED', loanId);
-  await pipeline.exec();
-}
-
-async function handleRejected(
-  client: Redis,
-  loanId: string,
-  payload: Record<string, unknown>
-): Promise<void> {
-  const existing = await client.get(`loan:${loanId}`);
-  if (!existing) return;
-
-  const loan = JSON.parse(existing);
-  loan.status = 'REJECTED';
-  loan.rejectedReason = payload.reason;
-  loan.rejectedBy = payload.rejectedBy;
-
-  const pipeline = client.pipeline();
-  pipeline.set(`loan:${loanId}`, JSON.stringify(loan));
-  pipeline.srem('loans:status:SUBMITTED', loanId);
-  pipeline.sadd('loans:status:REJECTED', loanId);
-  await pipeline.exec();
-}
-
-async function handleDisbursed(
-  client: Redis,
-  loanId: string,
-  timestamp: string,
-  payload: Record<string, unknown>
-): Promise<void> {
-  const existing = await client.get(`loan:${loanId}`);
-  if (!existing) return;
-
-  const loan = JSON.parse(existing);
-  loan.status = 'DISBURSED';
-  loan.disbursedAt = timestamp;
-  loan.disbursementAccount = payload.disbursementAccount;
-
-  const pipeline = client.pipeline();
-  pipeline.set(`loan:${loanId}`, JSON.stringify(loan));
-  pipeline.srem('loans:status:APPROVED', loanId);
-  pipeline.sadd('loans:status:DISBURSED', loanId);
-  await pipeline.exec();
+async function upsert(client: PoolClient, row: LoanRow): Promise<void> {
+  await client.query(
+    `INSERT INTO loans (
+       loan_id, applicant_name, requested_amount, purpose, status,
+       approved_amount, approved_by, approved_at, rejection_reason, rejected_by,
+       disbursement_account, disbursed_at, created_at, updated_at, last_version)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15)
+     ON CONFLICT (loan_id) DO UPDATE SET
+       applicant_name       = EXCLUDED.applicant_name,
+       requested_amount     = EXCLUDED.requested_amount,
+       purpose              = EXCLUDED.purpose,
+       status               = EXCLUDED.status,
+       approved_amount      = EXCLUDED.approved_amount,
+       approved_by          = EXCLUDED.approved_by,
+       approved_at          = EXCLUDED.approved_at,
+       rejection_reason     = EXCLUDED.rejection_reason,
+       rejected_by          = EXCLUDED.rejected_by,
+       disbursement_account = EXCLUDED.disbursement_account,
+       disbursed_at         = EXCLUDED.disbursed_at,
+       created_at           = EXCLUDED.created_at,
+       updated_at           = EXCLUDED.updated_at,
+       last_version         = EXCLUDED.last_version
+     WHERE loans.last_version < EXCLUDED.last_version`,
+    [
+      row.loan_id,
+      row.applicant_name,
+      row.requested_amount,
+      row.purpose,
+      row.status,
+      row.approved_amount,
+      row.approved_by,
+      row.approved_at,
+      row.rejection_reason,
+      row.rejected_by,
+      row.disbursement_account,
+      row.disbursed_at,
+      row.created_at,
+      row.updated_at,
+      row.last_version,
+    ]
+  );
 }
