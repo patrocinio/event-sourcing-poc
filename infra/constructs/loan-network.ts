@@ -16,7 +16,9 @@ export class LoanNetwork extends Construct {
 
     this.vpc = new ec2.Vpc(this, 'Vpc', {
       maxAzs: 3,
-      natGateways: 3, // One per AZ for HA
+      // One NAT per region keeps cost (and Elastic IP use) down for this PoC.
+      // Lambda egress (Kinesis, Secrets Manager) loses AZ redundancy; use 3 for HA.
+      natGateways: 1,
       subnetConfiguration: [
         { cidrMask: 24, name: 'Public', subnetType: ec2.SubnetType.PUBLIC },
         { cidrMask: 24, name: 'Private', subnetType: ec2.SubnetType.PRIVATE_WITH_EGRESS },
