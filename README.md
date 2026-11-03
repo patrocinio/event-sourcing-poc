@@ -1,6 +1,6 @@
 # AWS-Native Loan Originations — CQRS/Event Sourcing
 
-A serverless implementation of CQRS (Command Query Responsibility Segregation) and Event Sourcing patterns using native AWS services. This is the AWS-native equivalent of the [Axon Framework PoC](https://github.com/patrocinio/axon-poc/tree/main) on the `main` branch.
+A serverless implementation of CQRS (Command Query Responsibility Segregation) and Event Sourcing patterns using native AWS services. This is the AWS-native equivalent of the [Axon Framework PoC](https://github.com/patrocinio/event-sourcing-poc/tree/main) on the `main` branch.
 
 ## Architecture
 
