@@ -13,3 +13,12 @@ cdk.out/
 coverage/
 .gradle/
 build/
+
+# CDK lookup cache and deploy outputs (contain account IDs, endpoints, ARNs)
+cdk.context.json
+cdk-outputs*.json
+
+# Local editor and AI-assistant tooling
+*.code-workspace
+.kiro/
+aidlc-docs/

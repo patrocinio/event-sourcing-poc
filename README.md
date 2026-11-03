@@ -1,6 +1,6 @@
 # Aurora Loan Originations — CQRS/Event Sourcing (`aurora` branch)
 
-A serverless implementation of CQRS (Command Query Responsibility Segregation) and Event Sourcing on AWS, with an **Aurora PostgreSQL Serverless v2 Global Database** as both the event store and the read model, deployed to **two regions** (us-east-1 primary, us-west-2 secondary). This branch is derived from `aws-native` (DynamoDB Global Tables + ElastiCache Redis) and is the AWS counterpart of the [Axon Framework PoC](https://github.com/patrocinio/axon-poc/tree/main) on `main`.
+A serverless implementation of CQRS (Command Query Responsibility Segregation) and Event Sourcing on AWS, with an **Aurora PostgreSQL Serverless v2 Global Database** as both the event store and the read model, deployed to **two regions** (us-east-1 primary, us-west-2 secondary). This branch is derived from `aws-native` (DynamoDB Global Tables + ElastiCache Redis) and is the AWS counterpart of the [Axon Framework PoC](https://github.com/patrocinio/event-sourcing-poc/tree/main) on `main`.
 
 The domain logic (`src/domain`) and the REST API contract (paths, request bodies, response JSON and status codes) are unchanged from `aws-native`. The API requires IAM (SigV4) authentication in both regions.
 
